@@ -14,6 +14,7 @@
 
 import glob
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -40,7 +41,7 @@ from nemo.collections.common.callbacks import EMA
 from nemo.constants import NEMO_ENV_VARNAME_TESTING, NEMO_ENV_VARNAME_VERSION
 from nemo.utils import logging, timers
 from nemo.utils.app_state import AppState
-from nemo.utils.callbacks import NeMoModelCheckpoint, PreemptionCallback
+from nemo.utils.callbacks import FaultToleranceCallback, NeMoModelCheckpoint, PreemptionCallback
 from nemo.utils.env_var_parsing import get_envbool
 from nemo.utils.exceptions import NeMoBaseException
 from nemo.utils.get_rank import is_global_rank_zero
@@ -127,6 +128,44 @@ class EMAParams:
 
 
 @dataclass
+class FaultToleranceParams:
+    """
+    NOTE: This config section is read by the FT launcher, 
+        parsed config is shared via IPC with the current process (rank).
+        The exception is `simulated_fault` which is used in the current process (rank)
+        for simulating faults, which is useful for debugging and development.
+    """
+
+    """ Periodic workload check interval in workload monitor """
+    workload_check_interval: float = 5.0
+    """ Timeout for first heartbeat from a rank:
+    if rank does not send first heartbeat within `initial_rank_heartbeat_timeout`, failure is detected.
+    If None this timeout needs to be deduced and set during runtime, based the observed heartbeat intervals. """
+    initial_rank_heartbeat_timeout: Optional[float] = 60.0 * 60.0
+    """ Timeout for subsequent heartbeats from a rank: 
+    if no rank heartbeat is received within `rank_heartbeat_timeout`, failure is detected 
+    If None this timeout needs to be deduced and set during runtime, based the observed heartbeat intervals. """
+    rank_heartbeat_timeout: Optional[float] = 45.0 * 60.0
+    """ Try to calculate `rank_heartbeat_timeout` and `initial_rank_heartbeat_timeout`
+        based on the observed heartbeat intervals. Initial values will be set to the calculated values. """
+    calculate_timeouts: bool = True
+    """ Signal used to terminate the rank when failure is detected """
+    rank_termination_signal: signal.Signals = signal.SIGKILL
+    """ Where the fault tolerance files should be stored """
+    work_dir: str = "./_ft_scratch_dir"
+    """ Log level - common to all fault tolerance components """
+    log_level: int = logging.DEBUG
+    """ Max number of restarts for a rank """
+    max_rank_restarts: int = 0
+    """ How many subsequent job failures allowed until stop autoresuming. 0 - do not autoresume """
+    max_subsequent_job_failures: int = 0
+    """ Additional FT launcher params """
+    additional_ft_launcher_args: str = ''
+    """ For debug and development purposes only. """
+    simulated_fault: Optional[Any] = None
+
+
+@dataclass
 class ExpManagerConfig:
     """Experiment Manager config for validation of passed arguments.
     """
@@ -177,6 +216,9 @@ class ExpManagerConfig:
     max_time_per_run: Optional[str] = None
     # time to sleep non 0 ranks during initialization
     seconds_to_sleep: float = 5
+    # Fault tolrance config
+    create_fault_tolerance_callback: Optional[bool] = False
+    fault_tolerance: Optional[FaultToleranceParams] = field(default_factory=lambda: FaultToleranceParams())
 
 
 class TimingCallback(Callback):
@@ -307,6 +349,7 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
              See EarlyStoppingParams dataclass above.
             - create_preemption_callback (bool): Flag to decide whether to enable preemption callback to save checkpoints and exit training
              immediately upon preemption. Default is True.
+            - create_fault_tolerance_callback (bool): Use experimental fault tolerance callback.
             - files_to_copy (list): A list of files to copy to the experiment logging directory. Defaults to None which
                 copies no files.
             - log_local_rank_0_only (bool): Whether to only create log files for local rank 0. Defaults to False.
@@ -495,6 +538,17 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
         if not found_ptl_timer:
             trainer.max_time = cfg.max_time_per_run
             trainer.callbacks.append(StatelessTimer(cfg.max_time_per_run))
+
+    if cfg.create_fault_tolerance_callback:
+        ft_params = cfg.fault_tolerance
+        ft_use_autoresume = ft_params.max_subsequent_job_failures > 0
+        # remaning FT params will be received via IPC from the FT launcher
+        fault_tol_callback = FaultToleranceCallback(
+            autoresume=ft_use_autoresume,
+            calculate_timeouts=ft_params.calculate_timeouts,
+            simulated_fault_params=ft_params.simulated_fault,
+        )
+        trainer.callbacks.append(fault_tol_callback)
 
     if is_global_rank_zero():
         # Move files_to_copy to folder and add git information if present
