@@ -151,13 +151,11 @@ class FaultToleranceParams:
     calculate_timeouts: bool = True
     """ Signal used to terminate the rank when failure is detected """
     rank_termination_signal: signal.Signals = signal.SIGKILL
-    """ Where the fault tolerance files should be stored """
-    work_dir: str = "./_ft_scratch_dir"
     """ Log level - common to all fault tolerance components """
     log_level: int = logging.DEBUG
-    """ Max number of restarts for a rank """
+    """ Used by FT launcher: Max number of restarts for a rank """
     max_rank_restarts: int = 0
-    """ How many subsequent job failures allowed until stop autoresuming. 0 - do not autoresume """
+    """ Used by FT launcher: How many subsequent job failures allowed until stop autoresuming. 0 - do not autoresume """
     max_subsequent_job_failures: int = 0
     """ Additional FT launcher params """
     additional_ft_launcher_args: str = ''
