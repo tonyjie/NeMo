@@ -541,6 +541,8 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
 
     if cfg.create_fault_tolerance_callback:
         ft_params = cfg.fault_tolerance
+        # job failures are handled by the launcher,
+        # here all we need to know if autoresume is enabled.
         ft_use_autoresume = ft_params.max_subsequent_job_failures > 0
         # remaning FT params will be received via IPC from the FT launcher
         fault_tol_callback = FaultToleranceCallback(

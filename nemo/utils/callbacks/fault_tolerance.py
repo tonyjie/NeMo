@@ -35,23 +35,98 @@ import fault_tolerance as ft
 from nemo.utils import logging
 
 
+class _TrainingStateMachine:
+    """
+    This class encapsulates logic for determining when:
+    - training is finished successfully (`.is_training_completed` property)
+    - FT timeouts can be updated (`.can_update_timeouts` property)
+
+    `on_ ...` methods update the state and should be called from the corresponding callback methods.
+    """
+
+    MIN_ITERS_FOR_TIMEOUT_UPDATE = 2
+
+    def __init__(self):
+        self.num_tr_iters_total = 0
+        self.num_tr_iter_at_last_save = None
+        self.seen_checkpointing = False
+        self.loaded_checkpoint = False
+        self.caught_exception = False
+        self.trainining_ended = False
+        self.timeouts_updated = False
+
+    def on_train_start(self):
+        pass
+
+    def on_train_end(self):
+        self.trainining_ended = True
+
+    def on_load_checkpoint(self):
+        self.loaded_checkpoint = True
+
+    def on_save_checkpoint(self):
+        self.num_tr_iter_at_last_save = self.num_tr_iters_total
+
+    def on_train_heartbeat(self):
+        self.num_tr_iters_total += 1
+        if not self.seen_checkpointing and self.num_tr_iter_at_last_save is not None:
+            # detect mid-epoch checkpointing that makes hearbeat interval longer
+            iters_pre_save = self.num_tr_iter_at_last_save
+            iters_post_save = self.num_tr_iters_total - self.num_tr_iter_at_last_save
+            self.seen_checkpointing = iters_pre_save > 0 and iters_post_save > 0
+
+    def on_eval_heartbeat(self):
+        pass
+
+    def on_exception(self):
+        self.caught_exception = True
+
+    def on_timeouts_updated(self):
+        self.timeouts_updated = True
+
+    @property
+    def is_training_completed(self) -> bool:
+        """
+        Returns True if training is finished sucessfuly, due to the number of iters or time limit.
+        """
+        # if exiting AND just 0 or 1 training iterations were made AND error is not set,
+        # assume training has finished successfully and there is nothing else to do.
+        # 1 iteration is made when we run a workload for which 'max_time' elapsed,
+        # so need to handle that special case.
+        # NOTE: this detection mechanism is sligtly wasteful, as it requires final "empty run"
+        return self.trainining_ended and self.num_tr_iters_total <= 1 and not self.caught_exception
+
+    @property
+    def can_update_timeouts(self) -> bool:
+        """
+        Returns True if new timeouts can be computed.
+        `.on_timeouts_updated()` resets this property back to False.
+        """
+        if self.timeouts_updated:
+            # timeouts are updated at most once per training run
+            return False
+        if self.num_tr_iters_total < self.MIN_ITERS_FOR_TIMEOUT_UPDATE:
+            # need a few training iters
+            return False
+        # check if there was checkoint loading and saving
+        # this makes heartbeat iterval longer than usual.
+        return self.loaded_checkpoint and self.seen_checkpointing
+
+
 class FaultToleranceCallback(Callback):
     """
     FaultToleranceCallback class is a Torch Lightning callback that handles fault tolerance.
     """
 
-    MIN_ITERS_FOR_TIMEOUT_UPDATE = 2
+    STATE_DICT_KEY = "fault_tolerance"
 
     def __init__(self, autoresume=False, calculate_timeouts=False, simulated_fault_params=None):
         self.fault_tol_client = None
-        self.num_iters_total = 0
-        self.num_iters_after_save = 0
-        self.saved_checkpoint = False
-        self.loaded_checkpoint = False
-        self.exception = None
+        self.loaded_ft_state_dict = None
         self.autoresume = autoresume
         self.calculate_timeouts = calculate_timeouts
         self.simulated_fault_params = simulated_fault_params
+        self.state_machine = _TrainingStateMachine()
         self._verify_env()
 
     def _verify_env(self):
@@ -60,97 +135,78 @@ class FaultToleranceCallback(Callback):
                 "'FAULT_TOL_FINISHED_FLAG_FILE' env variable is not set. " "Was this job launched with FT launcher?"
             )
 
-    def _setup_fault_tolerance(self, trainer, pl_module):
+    def _setup_fault_tolerance(self):
 
-        get_emergency_state_dict_cb, save_emergency_checkpoint_cb = self._get_fault_tol_callbacks(pl_module)
-
-        # FT client gets full config from the server
         self.fault_tol_client = ft.RankMonitorClient()
 
-        self.fault_tol_client.init_workload_monitoring(
-            get_state_dict_cb=get_emergency_state_dict_cb, save_checkpoint_cb=save_emergency_checkpoint_cb,
-        )
+        # Might load computed timeouts from a checkpoint.
+        if self.loaded_ft_state_dict:
+            self.fault_tol_client.load_state_dict(self.loaded_ft_state_dict)
 
-        if self.simulated_fault_params:
-            self._setup_simulated_fault()
+        # Initialize the FT client, no FT callbacks are provided,
+        # as currently we don't support emergency checkpointing.
+        self.fault_tol_client.init_workload_monitoring()
 
         ft_timeouts = self.fault_tol_client.timeouts
         if ft_timeouts.are_valid:
             logging.info(f"Fault tolerance client initialized. Timeouts: {ft_timeouts}")
         else:
             if self.calculate_timeouts:
-                logging.info(f"Fault tolerance doesn't have valid timeouts yet. Need to collect more data.")
+                logging.info(f"Fault tolerance client initialized. Timeouts: not calculated yet.")
             else:
                 raise RuntimeError(
                     "Fault tolerance doesn't have valid timeouts set and 'calculate_timeouts' is False."
                 )
+        # Simulated fault for testing/debug purposes
+        if self.simulated_fault_params:
+            self._setup_simulated_fault()
 
-    def _get_fault_tol_callbacks(self, pl_module):
-        get_state_cb = None
-        save_cb = None
-        # TODO: extract callbacks from pl_module
-        return get_state_cb, save_cb
-
-    def setup(self, trainer, pl_module, stage):
+    def on_train_start(self, trainer, pl_module):
+        self.state_machine.on_train_start()
         if self.fault_tol_client is None:
             self._setup_fault_tolerance(trainer, pl_module)
 
-    def on_fit_end(self, trainer, pl_module):
+    def on_train_end(self, trainer, pl_module):
+        self.state_machine.on_train_end()
         if trainer.global_rank == 0:
-            no_error = self.exception is None
-            # if exiting AND just 0 or 1 training iterations were made AND error is not set,
-            # assume training has finished successfully and there is nothing else to do.
-            # 1 iteration is made when we run a workload for which 'max_time' elapsed,
-            # so need to handle that special case.
-            if self.autoresume and (self.num_iters_total <= 1 and no_error):
+            if self.autoresume and self.state_machine.is_training_finished:
                 self._create_finished_flag_file()
 
     def on_load_checkpoint(self, trainer, pl_module, checkpoint):
-        self.loaded_checkpoint = True
+        self.state_machine.on_load_checkpoint()
+        self.loaded_ft_state_dict = checkpoint.get(self.STATE_DICT_KEY, None)
 
     def on_save_checkpoint(self, trainer, pl_module, checkpoint):
-        self.saved_checkpoint = True
-
-    def _maybe_update_timeouts(self):
-        # No need to update timeouts if we don't want to calculate them
-        if not self.calculate_timeouts:
-            return
-        # No need to update timeouts if they were already calculated
-        # NOTE: we update timeouts that were predefined in the config
-        if self.fault_tol_client.timeouts.are_valid and self.fault_tol_client.timeouts.were_calculated:
-            return
-        # Ensure that we have adequate data to update timeouts:
-        # - There was checkpoint loading
-        #   (this can increase time needed to get to the first iter)
-        # - There were some iters after checkpoint saving
-        #   (saving can make time between subsequent iters longer)
-        # - We got minimum number of iters (arbitrary number)
-        if (
-            self.num_iters_total >= FaultToleranceCallback.MIN_ITERS_FOR_TIMEOUT_UPDATE
-            and self.num_iters_after_save > 0
-            and self.loaded_checkpoint
-        ):
-            self.fault_tol_client.calculate_and_set_timeouts()
-            logging.info(f'Updated FT timeouts. New values: {self.fault_tol_client.timeouts}')
+        self.state_machine.on_save_checkpoint()
+        if trainer.global_rank == 0:
+            # FT state is the same on all ranks, so we can save it only on rank 0
+            checkpoint[self.STATE_DICT_KEY] = self.fault_tol_client.get_state_dict()
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        self.state_machine.on_train_heartbeat()
         self.fault_tol_client.send_heartbeat()
-        self.num_iters_total += 1
-        if self.saved_checkpoint:
-            self.num_iters_after_save += 1
-        self._maybe_update_timeouts()
+        if self.calculate_timeouts and self.state_machine.can_update_timeouts:
+            self.fault_tol_client.calculate_and_set_timeouts()
+            self.state_machine.on_timeouts_updated()
+            if trainer.global_rank == 0:
+                logging.info(f'Updated FT timeouts. New values: {self.fault_tol_client.timeouts}')
+            # verify that can_update_timeouts is cleared
+            assert not self.state_machine.can_update_timeouts
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+        self.state_machine.on_eval_heartbeat()
         self.fault_tol_client.send_heartbeat()
 
     def on_test_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+        self.state_machine.on_eval_heartbeat()
         self.fault_tol_client.send_heartbeat()
 
     def on_predict_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+        self.state_machine.on_eval_heartbeat()
         self.fault_tol_client.send_heartbeat()
 
     def on_exception(self, trainer, pl_module, exception):
-        self.exception = exception
+        self.state_machine.on_exception()
 
     def _create_finished_flag_file(self):
         try:
