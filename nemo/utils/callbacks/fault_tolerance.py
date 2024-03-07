@@ -161,10 +161,12 @@ class FaultToleranceCallback(Callback):
         if self.simulated_fault_params:
             self._setup_simulated_fault()
 
-    def on_train_start(self, trainer, pl_module):
-        self.state_machine.on_train_start()
+    def setup(self, trainer, pl_module, stage):
         if self.fault_tol_client is None:
             self._setup_fault_tolerance(trainer, pl_module)
+
+    def on_train_start(self, trainer, pl_module):
+        self.state_machine.on_train_start()
 
     def on_train_end(self, trainer, pl_module):
         self.state_machine.on_train_end()
