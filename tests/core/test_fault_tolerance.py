@@ -25,7 +25,7 @@ class TestFaultTolerance:
         assert sm.is_training_completed is False
         sm.on_eval_heartbeat()
         sm.on_eval_heartbeat()
-        sm.on_train_end()
+        sm.on_fit_end()
         assert sm.is_training_completed is True
 
     @pytest.mark.unit
@@ -34,7 +34,7 @@ class TestFaultTolerance:
         sm = _TrainingStateMachine()
         assert sm.is_training_completed is False
         sm.on_exception()
-        sm.on_train_end()
+        sm.on_fit_end()
         assert sm.is_training_completed is False
 
     @pytest.mark.unit
@@ -45,7 +45,7 @@ class TestFaultTolerance:
         assert sm.is_training_completed is False
         sm.on_train_heartbeat()
         sm.on_train_heartbeat()
-        sm.on_train_end()
+        sm.on_fit_end()
         assert sm.is_training_completed is False
 
     @pytest.mark.unit

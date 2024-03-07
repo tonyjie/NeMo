@@ -26,6 +26,8 @@
 # 2. docker build -t 'gitlab-master.nvidia.com:5005/dl/gwe/fault_tolerance_related/nemo-gwe-ft:dummy_tag' -f Dockerfile_fault_tolerance .
 # 3. docker push 'gitlab-master.nvidia.com:5005/dl/gwe/fault_tolerance_related/nemo-gwe-ft:dummy_tag'
 
+# WARNING: image building requires ~64GB of swap space on my machine with 32GB RAM
+
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:24.01-py3
 
 # build an image that includes only the nemo dependencies, ensures that dependencies
@@ -73,6 +75,21 @@ RUN git clone https://github.com/NVIDIA/apex.git && \
   git checkout f058162b215791b15507bb542f22ccfde49c872d && \
   pip install -v --no-build-isolation --disable-pip-version-check --no-cache-dir --config-settings "--build-option=--cpp_ext --cuda_ext --fast_layer_norm --distributed_adam --deprecated_fused_adam" ./
 
+# Install megatron core, this can be removed once 0.3 pip package is released
+# We leave it here in case we need to work off of a specific commit in main
+RUN git clone https://github.com/NVIDIA/Megatron-LM.git && \
+  cd Megatron-LM && \
+  git checkout ad53b1e38689a0ceed75ade7821f4e6c7554abb4 && \
+  pip install .
+
+# Transformer Engine 1.2.0
+RUN git clone https://github.com/NVIDIA/TransformerEngine.git && \
+  cd TransformerEngine && \
+  git fetch origin da30634a6c9ccdbb6c587b6c93b1860e4b038204 && \
+  git checkout FETCH_HEAD && \
+  git submodule init && git submodule update && \
+  NVTE_FRAMEWORK=pytorch NVTE_WITH_USERBUFFERS=1 MPI_HOME=/usr/local/mpi pip install .
+
 # uninstall stuff from base container
 RUN pip3 uninstall -y sacrebleu torchtext
 
@@ -104,21 +121,6 @@ RUN cd /opt/NeMo && pip install ".[all]" && pip install -e ./fault_tolerance
 # HF tokenizers
 ENV HUGGINGFACE_HUB_CACHE=/hf_cache
 RUN python -c "from transformers import AutoTokenizer; tok_gpt=AutoTokenizer.from_pretrained('gpt2'); tok_bert=AutoTokenizer.from_pretrained('bert-base-cased'); tok_large_bert=AutoTokenizer.from_pretrained('bert-large-cased'); tok_large_uncased_bert=AutoTokenizer.from_pretrained('bert-large-uncased');_=AutoTokenizer.from_pretrained('mistralai/Mistral-7B-v0.1');"
-
-# Install megatron core, this can be removed once 0.3 pip package is released
-# We leave it here in case we need to work off of a specific commit in main
-RUN git clone https://github.com/NVIDIA/Megatron-LM.git && \
-  cd Megatron-LM && \
-  git checkout ad53b1e38689a0ceed75ade7821f4e6c7554abb4 && \
-  pip install .
-  
-# Transformer Engine 1.2.0
-RUN git clone https://github.com/NVIDIA/TransformerEngine.git && \
-  cd TransformerEngine && \
-  git fetch origin da30634a6c9ccdbb6c587b6c93b1860e4b038204 && \
-  git checkout FETCH_HEAD && \
-  git submodule init && git submodule update && \
-  NVTE_FRAMEWORK=pytorch NVTE_WITH_USERBUFFERS=1 MPI_HOME=/usr/local/mpi pip install .
 
 # Check install
 RUN python -c "import nemo.collections.nlp as nemo_nlp" && \

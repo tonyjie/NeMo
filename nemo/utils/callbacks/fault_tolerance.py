@@ -55,10 +55,10 @@ class _TrainingStateMachine:
         self.trainining_ended = False
         self.timeouts_updated = False
 
-    def on_train_start(self):
+    def on_setup(self):
         pass
 
-    def on_train_end(self):
+    def on_fit_end(self):
         self.trainining_ended = True
 
     def on_load_checkpoint(self):
@@ -122,7 +122,6 @@ class FaultToleranceCallback(Callback):
 
     def __init__(self, autoresume=False, calculate_timeouts=False, simulated_fault_params=None):
         self.fault_tol_client = None
-        self.loaded_ft_state_dict = None
         self.autoresume = autoresume
         self.calculate_timeouts = calculate_timeouts
         self.simulated_fault_params = simulated_fault_params
@@ -138,10 +137,6 @@ class FaultToleranceCallback(Callback):
     def _setup_fault_tolerance(self):
 
         self.fault_tol_client = ft.RankMonitorClient()
-
-        # Might load computed timeouts from a checkpoint.
-        if self.loaded_ft_state_dict:
-            self.fault_tol_client.load_state_dict(self.loaded_ft_state_dict)
 
         # Initialize the FT client, no FT callbacks are provided,
         # as currently we don't support emergency checkpointing.
@@ -162,27 +157,27 @@ class FaultToleranceCallback(Callback):
             self._setup_simulated_fault()
 
     def setup(self, trainer, pl_module, stage):
+        self.state_machine.on_setup()
         if self.fault_tol_client is None:
-            self._setup_fault_tolerance(trainer, pl_module)
+            self._setup_fault_tolerance()
 
-    def on_train_start(self, trainer, pl_module):
-        self.state_machine.on_train_start()
-
-    def on_train_end(self, trainer, pl_module):
-        self.state_machine.on_train_end()
+    def on_fit_end(self, trainer, pl_module):
+        self.state_machine.on_fit_end()
         if trainer.global_rank == 0:
-            if self.autoresume and self.state_machine.is_training_finished:
+            if self.autoresume and self.state_machine.is_training_completed:
                 self._create_finished_flag_file()
 
     def on_load_checkpoint(self, trainer, pl_module, checkpoint):
         self.state_machine.on_load_checkpoint()
-        self.loaded_ft_state_dict = checkpoint.get(self.STATE_DICT_KEY, None)
+        loaded_ft_state_dict = checkpoint.get(self.STATE_DICT_KEY, None)
+        if loaded_ft_state_dict:
+            self.fault_tol_client.load_state_dict(loaded_ft_state_dict)
 
     def on_save_checkpoint(self, trainer, pl_module, checkpoint):
         self.state_machine.on_save_checkpoint()
         if trainer.global_rank == 0:
             # FT state is the same on all ranks, so we can save it only on rank 0
-            checkpoint[self.STATE_DICT_KEY] = self.fault_tol_client.get_state_dict()
+            checkpoint[self.STATE_DICT_KEY] = self.fault_tol_client.state_dict()
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         self.state_machine.on_train_heartbeat()
