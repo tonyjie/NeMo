@@ -203,6 +203,54 @@ file followed by a graceful exit from the run. The checkpoint saved upon preempt
 This feature is useful to increase utilization on clusters.
 The ``PreemptionCallback`` is enabled by default. To disable it simply add ``create_preemption_callback: False`` under exp_manager in the config YAML file. 
 
+Fault Tolerance
+---------------
+
+.. _exp_manager_fault_tolerance_support-label:
+
+When training DNN models, faults may occur, hindering the progress of the entire training process. 
+This is particularly common in distributed, multi-node training scenarios, with many machines and GPUs involved. 
+
+NeMo incorporates a fault tolerance mechanism to detect training halts. 
+In response, it can terminate a hung workload and, if requested, restart it from the last checkpoint.
+
+Fault tolerance relies on special launcher (``ft_launcher``), which is modified ``torchrun``.
+Launcher runs background processes called rank monitors. 
+
+Each training process (rank) sends `heartbeats` to its monitor during training and validation steps.
+If an rank monitor stops receiving `heartbeats`, a training failure is detected.
+
+Fault detection is implemented in the ``FaultToleranceCallback`` and is disabled by default. 
+To enable it, add a ``create_fault_tolerance_callback: True`` section under ``exp_manager`` in the config YAML file.
+Additionally, you can customize FT parameters by adding ``fault_tolerance`` section:
+
+.. code-block:: yaml
+
+    exp_manager:
+        ...
+        create_fault_tolerance_callback: True
+        fault_tolerance:
+            initial_rank_heartbeat_timeout: 600  # wait for 10 minutes for the initial heartbeat
+            rank_heartbeat_timeout: 300  # wait for 5 minutes for subsequent heartbeats
+
+Timeouts for fault detection need to be adjusted for a given workload:
+
+* ``initial_rank_heartbeat_timeout`` should be long enough to allow for workload initialization and
+  the first training or validation step.
+* ``rank_heartbeat_timeout`` should be at least as large as the longest possible interval between steps. 
+  **Importantly, `heartbeats` are not sent during checkpoint saving**, so checkpoint saving time should 
+  also be considered.
+
+``initial_rank_heartbeat_timeout: null`` and  ``rank_heartbeat_timeout: null`` can be set to ``null``,
+in which case they are not used. If ``calculate_timeouts: True`` timeouts will be automatically estimated based on observed intervals. 
+**Timeouts are estimated after checkpoint loading and saving was observed**. E.g., in multi-part training started 
+from scratch, timeouts won't be availabe during first run. Estimated timeouts are stored in checkpoint.
+
+``max_subsequent_job_failures`` allows for the automatic continuation of training on a SLURM cluster. 
+This option requires the job to be scheduled with modified `NeMo-Megatron-Launcher <https://github.com/NVIDIA/NeMo-Megatron-Launcher>`_ 
+If ``max_subsequent_job_failures`` value is ``>=1`` continuation job is prescheduled. It will continue work until 
+``max_subsequent_job_failures`` subsequent jobs failed (return code != 0) or training is completed sucessfully 
+("end of training" marker file is produced by the workload).
 
 .. _nemo_multirun-label:
 
