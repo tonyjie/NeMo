@@ -79,7 +79,7 @@ RUN git clone https://github.com/NVIDIA/apex.git && \
 # We leave it here in case we need to work off of a specific commit in main
 RUN git clone https://github.com/NVIDIA/Megatron-LM.git && \
   cd Megatron-LM && \
-  git checkout ad53b1e38689a0ceed75ade7821f4e6c7554abb4 && \
+  git checkout 43792028f003ed25a3ee8c5a0d4cad82317d81b5 && \
   pip install .
 
 # Transformer Engine 1.2.0
