@@ -120,7 +120,7 @@ RUN cd /opt/NeMo && pip install ".[all]" && pip install -e ./fault_tolerance
 
 # HF tokenizers
 ENV HUGGINGFACE_HUB_CACHE=/hf_cache
-RUN python -c "from transformers import AutoTokenizer; tok_gpt=AutoTokenizer.from_pretrained('gpt2'); tok_bert=AutoTokenizer.from_pretrained('bert-base-cased'); tok_large_bert=AutoTokenizer.from_pretrained('bert-large-cased'); tok_large_uncased_bert=AutoTokenizer.from_pretrained('bert-large-uncased');_=AutoTokenizer.from_pretrained('mistralai/Mistral-7B-v0.1');"
+RUN python -c "from transformers import AutoTokenizer; tok_gpt=AutoTokenizer.from_pretrained('gpt2'); tok_bert=AutoTokenizer.from_pretrained('bert-base-cased'); tok_large_bert=AutoTokenizer.from_pretrained('bert-large-cased'); tok_large_uncased_bert=AutoTokenizer.from_pretrained('bert-large-uncased');"
 
 # Check install
 RUN python -c "import nemo.collections.nlp as nemo_nlp" && \

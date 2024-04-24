@@ -134,6 +134,7 @@ class FaultToleranceParams:
         parsed config is shared via IPC with the current process (rank).
         The exception is `simulated_fault` which is used in the current process (rank)
         for simulating faults, which is useful for debugging and development.
+    NOTE: Default values should match fault_tolerance.FaultToleranceConfig
     """
 
     """ Periodic workload check interval in workload monitor """
@@ -151,8 +152,8 @@ class FaultToleranceParams:
     calculate_timeouts: bool = True
     """ Signal used to terminate the rank when failure is detected """
     rank_termination_signal: signal.Signals = signal.SIGKILL
-    """ Log level - common to all fault tolerance components """
-    log_level: int = logging.DEBUG
+    """ Log level for the FT client and server(rank monitor) """
+    log_level: int = logging.INFO
     """ Used by FT launcher: Max number of restarts for a rank """
     max_rank_restarts: int = 0
     """ Used by FT launcher: How many subsequent job failures allowed until stop autoresuming. 0 - do not autoresume """

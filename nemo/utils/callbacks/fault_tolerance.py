@@ -41,7 +41,7 @@ class _TrainingStateMachine:
     - training is finished successfully (`.is_training_completed` property)
     - FT timeouts can be updated (`.can_update_timeouts` property)
 
-    `on_ ...` methods update the state and should be called from the corresponding callback methods.
+    `on_ ...` methods update the state and should be called from the corresponding PTL callback methods.
     """
 
     MIN_ITERS_FOR_TIMEOUT_UPDATE = 2
@@ -131,16 +131,16 @@ class FaultToleranceCallback(Callback):
     def _verify_env(self):
         if self.autoresume and not os.environ.get('FAULT_TOL_FINISHED_FLAG_FILE', ''):
             raise RuntimeError(
-                "'FAULT_TOL_FINISHED_FLAG_FILE' env variable is not set. " "Was this job launched with FT launcher?"
+                "'FAULT_TOL_FINISHED_FLAG_FILE' env variable is not set. Was this job launched with FT launcher?"
             )
 
     def _setup_fault_tolerance(self):
 
         self.fault_tol_client = ft.RankMonitorClient()
 
-        # Initialize the FT client, no FT callbacks are provided,
-        # as currently we don't support emergency checkpointing.
-        self.fault_tol_client.init_workload_monitoring()
+        # Initialize the FT client
+        # Disable in-memory checkpoint manager, as it is not implemented yet.
+        self.fault_tol_client.init_workload_monitoring(chkpt_manager=ft.CheckpointManagerType.NONE)
 
         ft_timeouts = self.fault_tol_client.timeouts
         if ft_timeouts.are_valid:
@@ -172,6 +172,8 @@ class FaultToleranceCallback(Callback):
         loaded_ft_state_dict = checkpoint.get(self.STATE_DICT_KEY, None)
         if loaded_ft_state_dict:
             self.fault_tol_client.load_state_dict(loaded_ft_state_dict)
+            ft_timeouts = self.fault_tol_client.timeouts
+            logging.info(f"Fault tolerance timeouts loaded from chkpt: {ft_timeouts}")
 
     def on_save_checkpoint(self, trainer, pl_module, checkpoint):
         self.state_machine.on_save_checkpoint()
@@ -185,8 +187,7 @@ class FaultToleranceCallback(Callback):
         if self.calculate_timeouts and self.state_machine.can_update_timeouts:
             self.fault_tol_client.calculate_and_set_timeouts()
             self.state_machine.on_timeouts_updated()
-            if trainer.global_rank == 0:
-                logging.info(f'Updated FT timeouts. New values: {self.fault_tol_client.timeouts}')
+            logging.info(f'Updated FT timeouts. New values: {self.fault_tol_client.timeouts}')
             # verify that can_update_timeouts is cleared
             assert not self.state_machine.can_update_timeouts
 
@@ -210,7 +211,7 @@ class FaultToleranceCallback(Callback):
             flag_file_path = pathlib.Path(os.environ["FAULT_TOL_FINISHED_FLAG_FILE"])
             flag_file_path.touch()
         except Exception as e:
-            print(f"_create_finished_flag_file exception: {e}", file=sys.stderr)
+            logging.error(f"_create_finished_flag_file exception: {e}")
 
     def _setup_simulated_fault(self):
 
@@ -243,9 +244,9 @@ class FaultToleranceCallback(Callback):
         else:
             raise Exception(f"Unknown fault type {fault_type}")
 
-        delay = fault_desc.base_delay + fault_desc.get('rand_delay', 0) * random.random()
+        delay = fault_desc.base_delay + fault_desc.get('rand_delay', 0) * rng.random()
 
-        print(f"Selected fault={fault_type}; target rank={rank_to_fail}; delay={delay}", file=sys.stderr)
+        logging.info(f"Selected fault={fault_type}; target rank={rank_to_fail}; delay={delay}")
 
         def __fault_thread():
             time.sleep(delay)
