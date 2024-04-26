@@ -130,11 +130,8 @@ class EMAParams:
 @dataclass
 class FaultToleranceParams:
     """
-    NOTE: This config section is read by the FT launcher, 
-        parsed config is shared via IPC with the current process (rank).
-        The exception is `simulated_fault` which is used in the current process (rank)
-        for simulating faults, which is useful for debugging and development.
-    NOTE: Default values should match fault_tolerance.FaultToleranceConfig
+    NOTE: This config section is also read by the launcher.
+    NOTE: Default values should match fault_tolerance.FaultToleranceConfig.
     """
 
     """ Periodic workload check interval in workload monitor """
@@ -148,7 +145,7 @@ class FaultToleranceParams:
     If None this timeout needs to be deduced and set during runtime, based the observed heartbeat intervals. """
     rank_heartbeat_timeout: Optional[float] = 45.0 * 60.0
     """ Try to calculate `rank_heartbeat_timeout` and `initial_rank_heartbeat_timeout`
-        based on the observed heartbeat intervals. Initial values will be set to the calculated values. """
+        based on the observed heartbeat intervals. """
     calculate_timeouts: bool = True
     """ Signal used to terminate the rank when failure is detected """
     rank_termination_signal: signal.Signals = signal.SIGKILL
@@ -541,9 +538,8 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
     if cfg.create_fault_tolerance_callback:
         ft_params = cfg.fault_tolerance
         # job failures are handled by the launcher,
-        # here all we need to know if autoresume is enabled.
+        # here we only need to know if the autoresume is enabled.
         ft_use_autoresume = ft_params.max_subsequent_job_failures > 0
-        # remaning FT params will be received via IPC from the FT launcher
         fault_tol_callback = FaultToleranceCallback(
             autoresume=ft_use_autoresume,
             calculate_timeouts=ft_params.calculate_timeouts,
