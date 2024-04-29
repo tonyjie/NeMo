@@ -150,7 +150,7 @@ class FaultToleranceParams:
     """ Signal used to terminate the rank when failure is detected """
     rank_termination_signal: signal.Signals = signal.SIGKILL
     """ Log level for the FT client and server(rank monitor) """
-    log_level: int = logging.INFO
+    log_level: str = 'INFO'
     """ Used by FT launcher: Max number of restarts for a rank """
     max_rank_restarts: int = 0
     """ Used by FT launcher: How many subsequent job failures allowed until stop autoresuming. 0 - do not autoresume """
