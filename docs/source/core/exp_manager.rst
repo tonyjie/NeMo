@@ -209,7 +209,7 @@ Fault Tolerance
 .. _exp_manager_fault_tolerance_support-label:
 
 When training DNN models, faults may occur, hindering the progress of the entire training process. 
-This is particularly common in distributed, multi-node training scenarios, with many machines and GPUs involved. 
+This is particularly common in distributed, multi-node training scenarios, with many nodes and GPUs involved. 
 
 NeMo incorporates a fault tolerance mechanism to detect training halts. 
 In response, it can terminate a hung workload and, if requested, restart it from the last checkpoint.
@@ -236,7 +236,7 @@ config YAML file. Additionally, you can customize FT parameters by adding ``faul
 
 Timeouts for fault detection need to be adjusted for a given workload:
 
-* ``initial_rank_heartbeat_timeout`` should be long enough to allow for workload initialization
+* ``initial_rank_heartbeat_timeout`` should be long enough to allow for workload initialization.
 * ``rank_heartbeat_timeout`` should be at least as large as the longest possible interval between steps. 
 
 **Importantly, `heartbeats` are not sent during checkpoint loading and saving**, so time for 
@@ -253,9 +253,15 @@ defined in the config file.
 
 ``max_subsequent_job_failures`` allows for the automatic continuation of training on a SLURM cluster. 
 This option requires the job to be scheduled with modified `NeMo-Megatron-Launcher <https://github.com/NVIDIA/NeMo-Megatron-Launcher>`_ 
-If ``max_subsequent_job_failures`` value is ``>=1`` continuation job is prescheduled. It will continue 
-the work until ``max_subsequent_job_failures`` subsequent jobs failed (return code != 0) or training 
+If ``max_subsequent_job_failures`` value is ``>0`` continuation job is prescheduled. It will continue 
+the work until ``max_subsequent_job_failures`` subsequent jobs failed (SLURM step return code is != 0) or the training 
 is completed successfully ("end of training" marker file is produced by the workload).
+
+Other FT configuration items:
+* ``max_rank_restarts`` if ``>0`` ranks will be restarted on existing nodes in case of a failure.
+* ``rank_termination_signal`` signal that is sent to terminate hung ranks.
+* ``log_level`` log level used by FT client and monitor.
+
 .. _nemo_multirun-label:
 Hydra Multi-Run with NeMo
 -------------------------

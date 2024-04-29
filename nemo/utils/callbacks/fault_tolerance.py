@@ -235,11 +235,11 @@ class FaultToleranceCallback(Callback):
 
         fault_type = fault_desc.fault_type
         if fault_type == 'random':
-            fault_type = rng.choice(['rank_killed', 'rank_hang'])
+            fault_type = rng.choice(['rank_killed', 'rank_hung'])
 
         if fault_type == 'rank_killed':
             target_pid = os.getpid()
-        elif fault_type == 'rank_hang':
+        elif fault_type == 'rank_hung':
             target_pid = os.getpid()
         else:
             raise Exception(f"Unknown fault type {fault_type}")
@@ -251,7 +251,7 @@ class FaultToleranceCallback(Callback):
         def __fault_thread():
             time.sleep(delay)
             print(f"\n####\nSimulating fault: {fault_type}; rank to fail: {rank_to_fail}\n#####\n", file=sys.stderr)
-            if fault_type == 'rank_hang':
+            if fault_type == 'rank_hung':
                 os.kill(target_pid, signal.SIGTSTP)
             else:
                 os.kill(target_pid, signal.SIGKILL)
