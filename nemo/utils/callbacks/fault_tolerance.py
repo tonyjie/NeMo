@@ -250,9 +250,10 @@ class FaultToleranceCallback(Callback):
 
         def __fault_thread():
             time.sleep(delay)
-            print(f"\n####\nSimulating fault: {fault_type}; rank to fail: {rank_to_fail}\n#####\n", file=sys.stderr)
+            for of in [sys.stdout, sys.stderr]:
+                print(f"\n####\nSimulating fault: {fault_type}; rank to fail: {rank_to_fail}\n#####\n", file=of)
             if fault_type == 'rank_hung':
-                os.kill(target_pid, signal.SIGTSTP)
+                os.kill(target_pid, signal.SIGSTOP)
             else:
                 os.kill(target_pid, signal.SIGKILL)
 
