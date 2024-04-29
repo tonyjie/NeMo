@@ -16,8 +16,6 @@
 
 
 # Docker script for building NeMo container with GWE fault tolerance, using current source code.
-# Based on NeMo-FW Dockerfile, with additional dependencies for fault tolerance.
-# Non-required dependencies were removed to speed up the build process.
 
 # How to build and push the image:
 # 0. update code in repo, remember to pull submodules (git pull --recurse-submodules)
@@ -25,108 +23,20 @@
 # 2. docker build -t 'gitlab-master.nvidia.com:5005/dl/gwe/fault_tolerance_related/nemo-gwe-ft:dummy_tag' -f Dockerfile_fault_tolerance .
 # 3. docker push 'gitlab-master.nvidia.com:5005/dl/gwe/fault_tolerance_related/nemo-gwe-ft:dummy_tag'
 
-# WARNING: image building requires ~64GB of swap space on my machine with 32GB RAM
+FROM nvcr.io/nvidia/nemo:24.03.01.framework
 
-ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:24.02-py3
+RUN rm -rf /opt/NeMo
+COPY . /opt/NeMo
 
-# build an image that includes only the nemo dependencies, ensures that dependencies
-# are included first for optimal caching, and useful for building a development
-# image (by specifying build target as `nemo-deps`)
-FROM ${BASE_IMAGE} as nemo-deps
-
-# Ensure apt-get won't prompt for selecting options
-ENV DEBIAN_FRONTEND=noninteractive
-# libavdevice-dev required for latest torchaudio
-RUN apt-get update && \
-  apt-get upgrade -y && \
-  apt-get install -y \
-  libsndfile1 sox \
-  libfreetype6 \
-  swig \
-  ffmpeg \
-  libavdevice-dev && \
-  rm -rf /var/lib/apt/lists/*
-
-# libtool, ... , libgts-dev are required for graphviz
-# graphviz is required for k2 and pynini visualization
-RUN apt-get update && \
-  apt-get install -y \
-  libtool \
-  libltdl-dev \
-  automake \
-  autoconf \
-  bison \
-  flex \
-  tcl \
-  ghostscript \
-  libgd-dev \
-  fontconfig \
-  libcairo2-dev \
-  libpango1.0-dev \
-  libgts-dev && \
-  rm -rf /var/lib/apt/lists/*
-
-WORKDIR /workspace/
-# Install megatron core, this can be removed once 0.3 pip package is released
-# We leave it here in case we need to work off of a specific commit in main
-RUN git clone https://github.com/NVIDIA/Megatron-LM.git && \
-  cd Megatron-LM && \
-  git checkout fbb375d4b5e88ce52f5f7125053068caff47f93f && \
-  pip install . && \
-  cd megatron/core/datasets && \
-  make
-
-  # Performance optimizations for distributed optimizer: https://github.com/NVIDIA/apex/pull/1771
-RUN git clone https://github.com/NVIDIA/apex.git && \
-cd apex && \
-git checkout 810ffae374a2b9cb4b5c5e28eaeca7d7998fca0c && \
-pip install -v --no-build-isolation --disable-pip-version-check --no-cache-dir --config-settings "--build-option=--cpp_ext --cuda_ext --fast_layer_norm --distributed_adam --deprecated_fused_adam" ./
-
-# Transformer Engine 1.2.0
-RUN git clone https://github.com/NVIDIA/TransformerEngine.git && \
-  cd TransformerEngine && \
-  git fetch origin bfe21c3d68b0a9951e5716fb520045db53419c5e && \
-  git checkout FETCH_HEAD && \
-  git submodule init && git submodule update && \
-  NVTE_FRAMEWORK=pytorch NVTE_WITH_USERBUFFERS=1 MPI_HOME=/usr/local/mpi pip install .
-
-# uninstall stuff from base container
-RUN pip3 uninstall -y sacrebleu torchtext
-
-
-# install nemo dependencies
-WORKDIR /tmp/nemo
-ENV LHOTSE_REQUIRE_TORCHAUDIO=0
-COPY requirements .
-RUN for f in $(ls requirements*.txt); do pip3 install --disable-pip-version-check --no-cache-dir -r $f; done
-
-# install flash attention
-RUN pip install flash-attn
-# install numba for latest containers
-RUN pip install numba>=0.57.1
-# install ammo
-RUN pip install nvidia-ammo~=0.9.0 --extra-index-url https://pypi.nvidia.com --no-cache-dir
-
-# copy nemo source into a scratch image
-FROM scratch as nemo-src
-COPY . .
-
-# start building the final container
-FROM nemo-deps as nemo
-ARG NEMO_VERSION=2.0.0
-
-# Check that NEMO_VERSION is set. Build will fail without this. Expose NEMO and base container
-# version information as runtime environment variable for introspection purposes
-RUN /usr/bin/test -n "$NEMO_VERSION" && \
-  /bin/echo "export NEMO_VERSION=${NEMO_VERSION}" >> /root/.bashrc && \
-  /bin/echo "export BASE_IMAGE=${BASE_IMAGE}" >> /root/.bashrc
-
-# Install NeMo and FT
-RUN --mount=from=nemo-src,target=/tmp/nemo,rw cd /tmp/nemo && pip install ".[all]" && pip install -e ./fault_tolerance
+RUN cd /opt/NeMo && pip install ".[all]" && pip install -e ./fault_tolerance
 
 # HF tokenizers
 ENV HUGGINGFACE_HUB_CACHE=/hf_cache
-RUN python -c "from transformers import AutoTokenizer; tok_gpt=AutoTokenizer.from_pretrained('gpt2'); tok_bert=AutoTokenizer.from_pretrained('bert-base-cased'); tok_large_bert=AutoTokenizer.from_pretrained('bert-large-cased'); tok_large_uncased_bert=AutoTokenizer.from_pretrained('bert-large-uncased');"
+RUN python -c "from transformers import AutoTokenizer; \
+              tok_gpt=AutoTokenizer.from_pretrained('gpt2'); \
+              tok_bert=AutoTokenizer.from_pretrained('bert-base-cased'); \
+              tok_large_bert=AutoTokenizer.from_pretrained('bert-large-cased'); \
+              tok_large_uncased_bert=AutoTokenizer.from_pretrained('bert-large-uncased');"
 
 # Check install
 RUN python -c "import nemo.collections.nlp as nemo_nlp" && \
