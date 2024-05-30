@@ -52,14 +52,14 @@ class _TrainingStateMachine:
         self.seen_checkpointing = False
         self.loaded_checkpoint = False
         self.caught_exception = False
-        self.trainining_ended = False
+        self.training_ended = False
         self.timeouts_updated = False
 
     def on_setup(self):
         pass
 
     def on_fit_end(self):
-        self.trainining_ended = True
+        self.training_ended = True
 
     def on_load_checkpoint(self):
         self.loaded_checkpoint = True
@@ -94,7 +94,7 @@ class _TrainingStateMachine:
         # 1 iteration is made when we run a workload for which 'max_time' elapsed,
         # so need to handle that special case.
         # NOTE: this detection mechanism is sligtly wasteful, as it requires final "empty run"
-        return self.trainining_ended and self.num_tr_iters_total <= 1 and not self.caught_exception
+        return self.training_ended and self.num_tr_iters_total <= 1 and not self.caught_exception
 
     @property
     def can_update_timeouts(self) -> bool:
