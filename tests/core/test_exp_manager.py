@@ -1054,8 +1054,7 @@ class TestExpManager:
 
     @pytest.mark.unit
     def test_fault_tol_callback_not_created_by_default(self):
-        """ There should be no FT callback by default
-        """
+        """There should be no FT callback by default"""
         test_conf = {"create_tensorboard_logger": False, "create_checkpoint_callback": False}
         test_trainer = pl.Trainer(accelerator='cpu')
         ft_callback_found = None
@@ -1067,8 +1066,7 @@ class TestExpManager:
 
     @pytest.mark.unit
     def test_fault_tol_callback_created(self):
-        """ Verify that fault tolerance callback is created
-        """
+        """Verify that fault tolerance callback is created"""
         try:
             os.environ['FAULT_TOL_CFG_PATH'] = "/tmp/dummy"
             test_conf = {
