@@ -183,7 +183,7 @@ def gpt_default_optimizer(module) -> Optimizer:
 def get_batch_on_this_context_parallel_rank(batch):
     from megatron.core import parallel_state
 
-    if cp_size := parallel_state.get_context_parallel_world_size() > 1:
+    if (cp_size := parallel_state.get_context_parallel_world_size()) > 1:
         num_valid_tokens_in_ub = None
         if 'loss_mask' in batch and batch['loss_mask'] is not None:
             num_valid_tokens_in_ub = batch['loss_mask'].sum()
@@ -213,7 +213,7 @@ def get_packed_seq_params(batch):
 
     cu_seqlens = batch['cu_seqlens'].squeeze()  # remove batch size dimension (mbs=1)
     # remove -1 "paddings" added in collate_fn
-    if cu_seqlens_argmin := batch.get('cu_seqlens_argmin', None) is not None:
+    if (cu_seqlens_argmin := batch.get('cu_seqlens_argmin', None)) is not None:
         # pre-compute cu_seqlens_argmin in dataset class for perf
         cu_seqlens = cu_seqlens[: cu_seqlens_argmin.item()]
     else:
