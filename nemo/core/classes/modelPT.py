@@ -194,6 +194,9 @@ class ModelPT(LightningModule, Model):
         # Setup nsys profiling if it has been enabled in the model config
         self._setup_nsys_profiling()
 
+        # Setup memory snapshot profiling if it has been enabled in the model config
+        self._setup_mem_snapshot_profiling()
+
         # A flag for the profile generation
         self._profile_complete = False
 
@@ -1703,6 +1706,44 @@ class ModelPT(LightningModule, Model):
                 else:
                     raise ValueError(f'Nsys end_step must be greater than or equal to nsys start_step')
 
+    def _setup_mem_snapshot_profiling(self):
+        """ Enables memory snapshot profiling
+            To use, add the following options to the model config: 
+            ## Memory snapshot profiling options
+            memory_snapshot: 
+                enabled: True
+                step_idx: 5
+                filepath: "/results/mem-snapshot.pickle"
+        """
+        if self.cfg.get('mem_snapshot', None) is not None:
+            if self.cfg.mem_snapshot.get('enabled', False):
+                # memory snapshot options
+                self._mem_snapshot_enabled = True
+                self._mem_snapshot_max_entries = 30000000 # we set a very large max_entries. I think normally one iteration won't exceed this restriction. This is only to avoid the extremely large file
+                self._mem_snapshot_step_idx = self.cfg.mem_snapshot.get('step_idx', 1) # default: start with 1, because idx = 0 is problematic (?)
+                self._mem_snapshot_filepath = self.cfg.mem_snapshot.get('filepath', '')
+
+                # if type(self._mem_snapshot_max_entries) == int:
+                #     logging.info(f'Memory snapshot setup with max_entries: {self._mem_snapshot_max_entries}')
+                # else:
+                #     raise ValueError(f'Memory snapshot max_entries must be of type int. Found: {type(self._mem_snapshot_max_entries)}')             
+
+                if type(self._mem_snapshot_step_idx) == int:
+                    logging.info(f'Memory snapshot setup with step idx: {self._mem_snapshot_step_idx}')
+                else:
+                    raise ValueError(f'Memory snapshot step idx must be of type int. Found: {type(self._mem_snapshot_step_idx)}')
+
+                if type(self._mem_snapshot_filepath) == str:
+                    logging.info(f'Memory snapshot file path: {self._mem_snapshot_filepath}')
+                else:
+                    raise ValueError(f'Memory snapshot filepath must be of type str. Found: {type(self._mem_snapshot_filepath)}')                
+
+                # print out
+                logging.info(f"Memory snapshot enabled: {self._mem_snapshot_enabled}")
+                logging.info(f"Memory snapshot step_idx: {self._mem_snapshot_step_idx}")
+                logging.info(f"Memory snapshot filepath: {self._mem_snapshot_filepath}")
+
+
     def on_train_start(self):
         """ PyTorch Lightning hook:
             https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-start
@@ -1727,6 +1768,13 @@ class ModelPT(LightningModule, Model):
             https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-batch-start
             We use it here to enable nsys profiling and dynamic freezing.
         """
+        # memory snapshot
+        if self.device.type == 'cuda':
+            if hasattr(self, '_mem_snapshot_enabled'):
+                if self._mem_snapshot_enabled and (batch_idx == self._mem_snapshot_step_idx - 1) and (get_rank() == 0): # because of the weird `batch_idx` mismatch "bug", we have to do this "-1" for batch start idx
+                    # start recording memory history
+                    logging.info(f"===== Starting snapshot record_memory_history at batch {batch_idx}, rank: {get_rank()} =====")
+                    torch.cuda.memory._record_memory_history(max_entries=self._mem_snapshot_max_entries)
 
         # nsys profiling
         if self.device.type == 'cuda':
@@ -1765,6 +1813,28 @@ class ModelPT(LightningModule, Model):
             https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-batch-end
             We use it here to enable nsys profiling.
         """
+        # from datetime import datetime
+        # TIME_FORMAT_STR: str = "%b_%d_%H_%M_%S"
+
+        # export memory snapshot
+        if self.device.type == 'cuda':
+            if hasattr(self, '_mem_snapshot_enabled'):
+                if self._mem_snapshot_enabled and (batch_idx == self._mem_snapshot_step_idx) and (get_rank() == 0):
+                    # timestamp = datetime.now().strftime(TIME_FORMAT_STR)
+                    # snapshot_file = f"/results/{timestamp}.pickle"
+                    # snapshot_file = self._mem_snapshot_filepath
+
+                    try:
+                        logging.info(f"===== Saving snapshot to local file: {self._mem_snapshot_filepath} =====")
+                        torch.cuda.memory._dump_snapshot(f"{self._mem_snapshot_filepath}")
+                    except Exception as e:
+                        logging.error(f"Failed to capture memory snapshot {e}")
+                        return
+
+                    # stop record memory history
+                    logging.info(f"===== Stopping snapshot record_memory_history at batch {batch_idx}, rank {get_rank()} =====")
+                    torch.cuda.memory._record_memory_history(enabled=None)
+        
 
         if self.device.type == 'cuda':
             if hasattr(self, '_nsys_profile_enabled'):
