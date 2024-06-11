@@ -38,6 +38,7 @@ from nemo.utils.app_state import AppState
 from nemo.utils.debug_hook import register_debug_hooks
 from nemo.utils.exceptions import NeMoBaseException
 from nemo.utils.get_rank import get_rank, is_global_rank_zero
+from nemo.utils.memory_snapshot_analyzer import peak_memory_analysis
 
 __all__ = ['ModelPT']
 
@@ -1722,6 +1723,7 @@ class ModelPT(LightningModule, Model):
                 self._mem_snapshot_max_entries = 30000000 # we set a very large max_entries. I think normally one iteration won't exceed this restriction. This is only to avoid the extremely large file
                 self._mem_snapshot_step_idx = self.cfg.mem_snapshot.get('step_idx', 1) # default: start with 1, because idx = 0 is problematic (?)
                 self._mem_snapshot_filepath = self.cfg.mem_snapshot.get('filepath', '')
+                self._mem_snapshot_csv_dir = self.cfg.mem_snapshot.get('csv_dir', '/results/')
 
                 # if type(self._mem_snapshot_max_entries) == int:
                 #     logging.info(f'Memory snapshot setup with max_entries: {self._mem_snapshot_max_entries}')
@@ -1738,10 +1740,16 @@ class ModelPT(LightningModule, Model):
                 else:
                     raise ValueError(f'Memory snapshot filepath must be of type str. Found: {type(self._mem_snapshot_filepath)}')                
 
+                if type(self._mem_snapshot_csv_dir) == str:
+                    logging.info(f'Memory snapshot exported csv dir: {self._mem_snapshot_csv_dir}')
+                else:
+                    raise ValueError(f'Memory snapshot exported csv dir must be of type str. Found: {type(self._mem_snapshot_csv_dir)}')     
+
                 # print out
                 logging.info(f"Memory snapshot enabled: {self._mem_snapshot_enabled}")
                 logging.info(f"Memory snapshot step_idx: {self._mem_snapshot_step_idx}")
                 logging.info(f"Memory snapshot filepath: {self._mem_snapshot_filepath}")
+                logging.info(f"Memory snapshot filepath: {self._mem_snapshot_csv_dir}")
 
 
     def on_train_start(self):
@@ -1815,7 +1823,7 @@ class ModelPT(LightningModule, Model):
         """
         # from datetime import datetime
         # TIME_FORMAT_STR: str = "%b_%d_%H_%M_%S"
-
+        
         # export memory snapshot
         if self.device.type == 'cuda':
             if hasattr(self, '_mem_snapshot_enabled'):
@@ -1834,7 +1842,13 @@ class ModelPT(LightningModule, Model):
                     # stop record memory history
                     logging.info(f"===== Stopping snapshot record_memory_history at batch {batch_idx}, rank {get_rank()} =====")
                     torch.cuda.memory._record_memory_history(enabled=None)
-        
+
+                    # if snapshot exists, we call the peak-memory-analyzer and export the csv file
+                    if os.path.exists(self._mem_snapshot_filepath):
+                        logging.info(f"===== Analyzing the generated memory snapshot file ======")
+                        peak_memory_analysis(self._mem_snapshot_filepath, self._mem_snapshot_csv_dir)
+                    else:
+                        raise Exception(f"Snapshot file not found: {self._mem_snapshot_filepath}")
 
         if self.device.type == 'cuda':
             if hasattr(self, '_nsys_profile_enabled'):
