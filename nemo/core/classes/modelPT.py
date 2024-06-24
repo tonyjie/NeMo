@@ -23,7 +23,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 import hydra
+import pickle
 import torch
+import sys
 from omegaconf import DictConfig, OmegaConf, open_dict
 from pytorch_lightning import LightningModule, Trainer
 from pytorch_lightning.utilities import model_summary, rank_zero_only
@@ -115,6 +117,8 @@ class ModelPT(LightningModule, Model):
             with open_dict(cfg):
                 cfg.nemo_version = package_info.__version__
 
+
+
         self._cfg = cfg
 
         # init mapping submodule attribute -> config_field for nested NeMo models
@@ -128,6 +132,9 @@ class ModelPT(LightningModule, Model):
         self._optimizer = None
         self._scheduler = None
         self.set_trainer(trainer)
+
+        self._setup_mem_snapshot_profiling()
+
 
         self._save_restore_connector = SaveRestoreConnector()
 
@@ -195,8 +202,8 @@ class ModelPT(LightningModule, Model):
         # Setup nsys profiling if it has been enabled in the model config
         self._setup_nsys_profiling()
 
-        # Setup memory snapshot profiling if it has been enabled in the model config
-        self._setup_mem_snapshot_profiling()
+        # # Setup memory snapshot profiling if it has been enabled in the model config
+        # self._setup_mem_snapshot_profiling()
 
         # A flag for the profile generation
         self._profile_complete = False
@@ -1668,6 +1675,33 @@ class ModelPT(LightningModule, Model):
         else:
             setattr(cls, '_save_restore_connector', save_restore_connector)
 
+    def oom_observer(self, device, alloc, device_alloc, device_free, *args, **kwargs):
+
+        if get_rank() == 0:
+            # print('Additional positional arguments:', args)
+            # print('Additional keyword arguments:', kwargs)
+            # snapshot right after an OOM happened
+            oom_snapshot_filename = '/results/oom_snapshot.pickle'
+            print(f'Catching and Saving a snapshot during OOM to {oom_snapshot_filename}')
+            torch.cuda.memory._dump_snapshot(f"{oom_snapshot_filename}")
+
+
+    # def save_snapshot(self):
+    #     if get_rank() == 0:
+    #         if self.snapshot is not None:
+    #             print('saving allocated state during OOM')
+    #             with open('/results/oom_snapshot.pickle', 'wb') as f:
+    #                 pickle.dump(self.snapshot, f)
+    #         else:
+    #             print('No snapshot to save')
+
+    # def global_exception_handler(self, exc_type, exc_value, exc_traceback):
+    #     if issubclass(exc_type, torch.cuda.OutOfMemoryError):
+    #         self.save_snapshot()  # Call the save_snapshot method
+    #     else:
+    #         # Call the default exception handler for other exceptions
+    #         sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
     def _setup_nsys_profiling(self):
         """ Enables nsys profiling
             To use, add the following optoins to the model config:
@@ -1718,12 +1752,18 @@ class ModelPT(LightningModule, Model):
         """
         if self.cfg.get('mem_snapshot', None) is not None:
             if self.cfg.mem_snapshot.get('enabled', False):
+                self.snapshot = None
+
+                logging.info(f"===== Starting snapshot record_memory_history during initialization =====")
+                torch.cuda.memory._record_memory_history()
+
                 # memory snapshot options
                 self._mem_snapshot_enabled = True
                 self._mem_snapshot_max_entries = 30000000 # we set a very large max_entries. I think normally one iteration won't exceed this restriction. This is only to avoid the extremely large file
                 self._mem_snapshot_step_idx = self.cfg.mem_snapshot.get('step_idx', 1) # default: start with 1, because idx = 0 is problematic (?)
                 self._mem_snapshot_filepath = self.cfg.mem_snapshot.get('filepath', '')
                 self._mem_snapshot_csv_dir = self.cfg.mem_snapshot.get('csv_dir', '/results/')
+                self._mem_snapshot_analysis = self.cfg.mem_snapshot.get('analysis', False)
 
                 # if type(self._mem_snapshot_max_entries) == int:
                 #     logging.info(f'Memory snapshot setup with max_entries: {self._mem_snapshot_max_entries}')
@@ -1745,11 +1785,21 @@ class ModelPT(LightningModule, Model):
                 else:
                     raise ValueError(f'Memory snapshot exported csv dir must be of type str. Found: {type(self._mem_snapshot_csv_dir)}')     
 
+                # if get_rank() == 0:
+                # OOM observer
+                torch._C._cuda_attach_out_of_memory_observer(self.oom_observer)
+                # Set the global exception handler to the class method
+                # sys.excepthook = self.global_exception_handler
+                # start record memory history (for OOM case)
+
+
                 # print out
                 logging.info(f"Memory snapshot enabled: {self._mem_snapshot_enabled}")
                 logging.info(f"Memory snapshot step_idx: {self._mem_snapshot_step_idx}")
                 logging.info(f"Memory snapshot filepath: {self._mem_snapshot_filepath}")
+                logging.info(f"Memory snapshot analysis: {self._mem_snapshot_analysis}")
                 logging.info(f"Memory snapshot filepath: {self._mem_snapshot_csv_dir}")
+
 
 
     def on_train_start(self):
@@ -1781,8 +1831,9 @@ class ModelPT(LightningModule, Model):
             if hasattr(self, '_mem_snapshot_enabled'):
                 if self._mem_snapshot_enabled and (batch_idx == self._mem_snapshot_step_idx - 1) and (get_rank() == 0): # because of the weird `batch_idx` mismatch "bug", we have to do this "-1" for batch start idx
                     # start recording memory history
-                    logging.info(f"===== Starting snapshot record_memory_history at batch {batch_idx}, rank: {get_rank()} =====")
-                    torch.cuda.memory._record_memory_history(max_entries=self._mem_snapshot_max_entries)
+                    # logging.info(f"===== Starting snapshot record_memory_history at batch {batch_idx}, rank: {get_rank()} =====")
+                    # torch.cuda.memory._record_memory_history(max_entries=self._mem_snapshot_max_entries)
+                    pass
 
         # nsys profiling
         if self.device.type == 'cuda':
@@ -1844,7 +1895,7 @@ class ModelPT(LightningModule, Model):
                     torch.cuda.memory._record_memory_history(enabled=None)
 
                     # if snapshot exists, we call the peak-memory-analyzer and export the csv file
-                    if os.path.exists(self._mem_snapshot_filepath):
+                    if os.path.exists(self._mem_snapshot_filepath) and self._mem_snapshot_analysis:
                         logging.info(f"===== Analyzing the generated memory snapshot file ======")
                         peak_memory_analysis(self._mem_snapshot_filepath, self._mem_snapshot_csv_dir)
                     else:
