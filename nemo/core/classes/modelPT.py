@@ -1759,10 +1759,12 @@ class ModelPT(LightningModule, Model):
 
                 # memory snapshot options
                 self._mem_snapshot_enabled = True
-                self._mem_snapshot_max_entries = 30000000 # we set a very large max_entries. I think normally one iteration won't exceed this restriction. This is only to avoid the extremely large file
-                self._mem_snapshot_step_idx = self.cfg.mem_snapshot.get('step_idx', 1) # default: start with 1, because idx = 0 is problematic (?)
+                # For LoRA-LLaMA2-70b, 2 global batch (16 micro-batches) takes 486950 entries. 
+                self._mem_snapshot_max_entries = 30000000 # we set a very large max_entries. I think normally one iteration won't exceed this restriction. This is only to avoid the extremely large file. 
+                self._mem_snapshot_step_idx = self.cfg.mem_snapshot.get('step_idx', 2) # default: start with 2, because idx = 0 or 1 is problematic (there are 2 batch[0]. Likely to be a BUG?)
                 self._mem_snapshot_filepath = self.cfg.mem_snapshot.get('filepath', '')
                 self._mem_snapshot_csv_dir = self.cfg.mem_snapshot.get('csv_dir', '/results/')
+                self._mem_snapshot_num_mb = self.cfg.mem_snapshot.get('num_mb', 1) # number of micro-batches per global batch. 
                 self._mem_snapshot_analysis = self.cfg.mem_snapshot.get('analysis', False)
 
                 # if type(self._mem_snapshot_max_entries) == int:
@@ -1785,6 +1787,11 @@ class ModelPT(LightningModule, Model):
                 else:
                     raise ValueError(f'Memory snapshot exported csv dir must be of type str. Found: {type(self._mem_snapshot_csv_dir)}')     
 
+                if type(self._mem_snapshot_num_mb) == int:
+                    logging.info(f'Memory snapshot setup with num_mb (number of micro-batches per global batch): {self._mem_snapshot_num_mb}')
+                else:
+                    raise ValueError(f'Memory snapshot num_mb must be of type int. Found: {type(self._mem_snapshot_num_mb)}')
+
                 # if get_rank() == 0:
                 # OOM observer
                 torch._C._cuda_attach_out_of_memory_observer(self.oom_observer)
@@ -1799,6 +1806,7 @@ class ModelPT(LightningModule, Model):
                 logging.info(f"Memory snapshot filepath: {self._mem_snapshot_filepath}")
                 logging.info(f"Memory snapshot analysis: {self._mem_snapshot_analysis}")
                 logging.info(f"Memory snapshot filepath: {self._mem_snapshot_csv_dir}")
+                logging.info(f"Memory snapshot num_mb: {self._mem_snapshot_num_mb}")
 
 
 
@@ -1831,9 +1839,11 @@ class ModelPT(LightningModule, Model):
             if hasattr(self, '_mem_snapshot_enabled'):
                 if self._mem_snapshot_enabled and (batch_idx == self._mem_snapshot_step_idx - 1) and (get_rank() == 0): # because of the weird `batch_idx` mismatch "bug", we have to do this "-1" for batch start idx
                     # start recording memory history
-                    # logging.info(f"===== Starting snapshot record_memory_history at batch {batch_idx}, rank: {get_rank()} =====")
-                    # torch.cuda.memory._record_memory_history(max_entries=self._mem_snapshot_max_entries)
-                    pass
+                    logging.info(f"===== Starting snapshot record_memory_history at batch {self._mem_snapshot_step_idx} (but batch_idx={batch_idx}), rank: {get_rank()} =====")
+                    self._mem_snapshot_memory_allocated = torch.cuda.memory_allocated() # should be weight_memory. # in Bytes. 
+                    torch.cuda.memory._record_memory_history(max_entries=self._mem_snapshot_max_entries)
+                    logging.info(f"Before recording memory snapshot, allocated memory: {self._mem_snapshot_memory_allocated / (1024*1024*1024)} GB")
+                    # pass
 
         # nsys profiling
         if self.device.type == 'cuda':
@@ -1878,7 +1888,7 @@ class ModelPT(LightningModule, Model):
         # export memory snapshot
         if self.device.type == 'cuda':
             if hasattr(self, '_mem_snapshot_enabled'):
-                if self._mem_snapshot_enabled and (batch_idx == self._mem_snapshot_step_idx) and (get_rank() == 0):
+                if self._mem_snapshot_enabled and (batch_idx == self._mem_snapshot_step_idx + 1) and (get_rank() == 0):
                     # timestamp = datetime.now().strftime(TIME_FORMAT_STR)
                     # snapshot_file = f"/results/{timestamp}.pickle"
                     # snapshot_file = self._mem_snapshot_filepath
@@ -1897,7 +1907,7 @@ class ModelPT(LightningModule, Model):
                     # if snapshot exists, we call the peak-memory-analyzer and export the csv file
                     if os.path.exists(self._mem_snapshot_filepath) and self._mem_snapshot_analysis:
                         logging.info(f"===== Analyzing the generated memory snapshot file ======")
-                        peak_memory_analysis(self._mem_snapshot_filepath, self._mem_snapshot_csv_dir)
+                        peak_memory_analysis(self._mem_snapshot_filepath, self._mem_snapshot_csv_dir, self._mem_snapshot_memory_allocated, self._mem_snapshot_num_mb)
                     else:
                         raise Exception(f"Snapshot file not found: {self._mem_snapshot_filepath}")
 
