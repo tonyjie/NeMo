@@ -1754,8 +1754,8 @@ class ModelPT(LightningModule, Model):
             if self.cfg.mem_snapshot.get('enabled', False):
                 self.snapshot = None
 
-                logging.info(f"===== Starting snapshot record_memory_history during initialization =====")
-                torch.cuda.memory._record_memory_history()
+                # logging.info(f"===== Starting snapshot record_memory_history during initialization =====")
+                # torch.cuda.memory._record_memory_history()
 
                 # memory snapshot options
                 self._mem_snapshot_enabled = True

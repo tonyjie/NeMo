@@ -211,7 +211,7 @@ class MemoryTracker:
             # free memory, but this can't be the first memory op for this addr. There must be an alloc happening before. 
             self.data[addr].add_lifetime_free(time_us, size, frames)
         else:
-            # ignore free_requested; or free_completed op before any alloc op, since that is related to some previous alloc ops that are not captured
+            # ignore free_requested; or free_completed op before any alloc op, since that is related to some previous alloc ops that are not captured. 
             # one thing need to keep in mind: we ignore `free_completed` memory that we don't see `alloc` before in this trace. However, these memory activities exist because our trace is not guaranteed to be complete. This may lead to some memory counting mismatch. 
             pass
     
@@ -256,7 +256,7 @@ class MemoryGroupByAllocFrames:
 
 
     def __str__(self):
-        # return f"Alloc Frames: {self.alloc_frames}, Count: {self.count}, Total Size: {self.total_size:.5f} GB"
+        # return f"Alloc Frames: {self.alloc_frames}, Count: {self.count}, Total Size: {self.total_size:.5f} GB"a
         # return f"Count: {self.count}, Total Size: {self.total_size:.5f} GB"
         return f"First Py Frame: {self.frame_string}, Count: {self.count}, Total Size: {self.total_size:.5f} GB"
 
@@ -267,7 +267,7 @@ class MemoryAnalyzer:
         memory_list: list of (addr, start_time_us, size, alloc_frames)
         """
         self.memory_list = memory_list
-        self.alloc_frames_group = dict() # key: alloc_frames, value: MemoryGroupByAllocFrames
+        self.alloc_frames_group = dict() # key: alloc_frames_tuple, value: MemoryGroupByAllocFrames
 
     def group_memory_by_alloc_frames(self):
         for addr, start_time_us, size, alloc_frames in self.memory_list:
@@ -277,6 +277,9 @@ class MemoryAnalyzer:
                 self.alloc_frames_group[alloc_frames_tuple] = MemoryGroupByAllocFrames(alloc_frames, [])
 
             self.alloc_frames_group[alloc_frames_tuple].add_memory((addr, start_time_us, size, alloc_frames))
+        
+        # sort the alloc_frames_group by total_size
+        self.alloc_frames_group = dict(sorted(self.alloc_frames_group.items(), key=lambda x: x[1].total_size, reverse=True))
     
     def print_info(self):
         for frames, group in self.alloc_frames_group.items():
@@ -284,11 +287,11 @@ class MemoryAnalyzer:
     
     def save_as_list(self):
         """
-        Save as a list of tuple (frame_string, count, total_size)
+        Save as a list of tuple (frame_string, count, total_size, alloc_frames)
         """
         memory_group_by_alloc_frames = []
         for frames, group in self.alloc_frames_group.items():
-            one_layer = group.frame_string, group.count, group.total_size
+            one_layer = group.frame_string, group.count, group.total_size, group.alloc_frames
             memory_group_by_alloc_frames.append(one_layer)
         return memory_group_by_alloc_frames
 
@@ -504,8 +507,7 @@ def peak_memory_analysis(mem_snapshot_filepath, mem_snapshot_csv_dir, memory_all
     # logging.info(f"Number of alive memory addresses: {len(alive_memory_min)}, Total memory size: {total_memory_min:.5f} GB")
     # logging.info(f"current memory: {alloc_memory_history[idx_min]:.5f} GB")
 
-    logging.info()
-    logging.info(f"======== 1. Global Peak Alive Memory Analysis (Activation Only) ========")
+    logging.info(f"\n======== 1. Global Peak Alive Memory Analysis (Activation Only) ========")
     logging.info(f"===== Check Alive Memory at Global Peak: time_max_alloc (relative time): {time_max_alloc/max_time_us:.5f} =====") # need to be the time here
 
     
@@ -534,8 +536,7 @@ def peak_memory_analysis(mem_snapshot_filepath, mem_snapshot_csv_dir, memory_all
 
 
     # ======== 2. group memory by alloc_frames at global peak ========
-    logging.info()
-    logging.info(f"======== 2. Group Global Peak Alive Memory by Alloc Frames ========")
+    logging.info(f"\n======== 2. Group Global Peak Alive Memory by Alloc Frames ========")
     analyzer = MemoryAnalyzer(alive_memory_max)
     analyzer.group_memory_by_alloc_frames()
     # analyzer.print_info()
@@ -557,8 +558,7 @@ def peak_memory_analysis(mem_snapshot_filepath, mem_snapshot_csv_dir, memory_all
 
 
     # ======== 3. Inter-iteration Comparison Analysis ========
-    logging.info()
-    logging.info(f"======== 3. Inter-iteration Comparison Analysis ========")
+    logging.info(f"\n======== 3. Inter-iteration Comparison Analysis ========")
 
     logging.info(f"===== Compare Alive Memory Between Each Consecutive Peaks =====")
 
