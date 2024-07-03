@@ -5,7 +5,7 @@ import numpy as np
 from scipy.signal import find_peaks, peak_prominences
 from nemo.utils import logging
 
-__all__ = ['peak_memory_analysis_weight', 'peak_memory_analysis_activation']
+__all__ = ['peak_memory_analysis_weight', 'peak_memory_analysis_activation', 'peak_memory_analysis_oom']
 
 GB_SIZE = 1024*1024*1024
 MB_SIZE = 1024*1024
@@ -366,6 +366,88 @@ def prune_frames(frames):
 
 
 
+
+def peak_memory_analysis_oom(mem_snapshot_filepath, mem_snapshot_csv_dir):
+    """
+    Key and Entry Function for memory analysis: Out Of Memory case. 
+    Actually it's the same with peak_memory_analysis_weight(), instead of the output file name. 
+    We detect the peak memory (would be the last timepoint in the oom-trace), and analysis that peak moment. 
+    We don't include inter-iteration comparison, since we don't know what OOM snapshot would looks like, and that analysis could break. 
+    """
+    
+    # ===== Loading =====
+    snapshot = load_pickle_file(mem_snapshot_filepath)
+    traces = snapshot['device_traces']
+    trace = traces[0] # useful trace. Device 0. 
+
+    # remove the last timepoint, if it is an oom action
+    if trace[-1]['action'] == 'oom':
+        trace = trace[:-1]
+
+    min_time_us, max_time_us = trace[0]['time_us'], trace[-1]['time_us']
+    TIME_OFFSET = min_time_us
+    min_time_us -= TIME_OFFSET
+    max_time_us -= TIME_OFFSET
+
+    # change all the global time_us to the relative time (starting from 0)
+    trace = to_relative_time(trace, TIME_OFFSET)
+
+    (alloc_memory_history, time_us_history), (idx_min, time_min_alloc, min_alloc_memory), (idx_max, time_max_alloc, max_alloc_memory) = alloc_memory_timeline(trace)
+    logging.info(f"===== Global Max and Min Memory =====")
+    logging.info(f"idx_min: {idx_min}, relative_idx_min: {idx_min/len(trace):.5f}, time_min_alloc: {time_min_alloc}, min_alloc_memory: {min_alloc_memory:.5f} GB")
+    logging.info(f"idx_max: {idx_max}, relative_idx_max: {idx_max/len(trace):.5f}, time_max_alloc: {time_max_alloc}, max_alloc_memory: {max_alloc_memory:.5f} GB")
+
+    # track the lifetime of each memory address
+    tracker = MemoryTracker()
+    for tp in trace:
+        tracker.add_entry(tp)
+    
+    # ======== 1. Global Peak Alive Memory Analsysis ========
+    logging.info(f"\n======== 1. Global Peak Alive Memory Analysis (Out Of Memory) ========")
+    logging.info(f"===== Check Alive Memory at Global Peak: time_max_alloc (relative time): {time_max_alloc/max_time_us:.5f} =====") # need to be the time here
+
+    alive_memory_max = tracker.check_alive_memory(time_max_alloc)
+    # the accumulated memory size at time_max_alloc
+    total_memory_max = sum([x[2] for x in alive_memory_max])
+    logging.info(f"Number of alive memory addresses: {len(alive_memory_max)}, Total memory size: {total_memory_max:.5f} GB")
+    
+    logging.info(f"===== Export to CSV: alive memory with its stack traces =====")
+    # 1. export this alive_memory_max to a csv file, with pandas
+    alive_memory_max_short = [(x[0], x[1], x[2], first_py_frame(x[3])) for x in alive_memory_max]
+    data = {
+        "Addr (Decimal)": [x[0] for x in alive_memory_max],
+        "Time of Allocation (us)": [x[1] for x in alive_memory_max],
+        "Size (GB)": [x[2] for x in alive_memory_max],
+        "First Python Frame": [x[3] for x in alive_memory_max_short], # this is the first frame that shows a `.py` file
+        "Full Stack Trace": [x[3] for x in alive_memory_max], 
+        "Pruned Stack Trace": [prune_frames(x[3]) for x in alive_memory_max], # prune the stack trace
+    }
+    df = pd.DataFrame(data)
+    csv_1_path = os.path.join(mem_snapshot_csv_dir, "oom_alive_memory.csv")
+    df.to_csv(csv_1_path, index=False) # this generates a big csv file, since the alloc_frames are huge. 
+    logging.info(f"1: Exported to {csv_1_path}")
+
+
+    # ======== 2. group memory by alloc_frames at global peak ========
+    logging.info(f"\n======== 2. Group Global Peak Alive Memory by Alloc Frames ========")
+    analyzer = MemoryAnalyzer(alive_memory_max)
+    analyzer.group_memory_by_alloc_frames()
+    # analyzer.print_info()
+    memory_group_by_alloc_frames = analyzer.save_as_list()
+
+    # logging.info(memory_group_by_alloc_frames)
+    # export as csv
+    logging.info(f"===== Export to CSV: grouped memory by alloc_frames =====")
+    data_group = {
+        "First Python Frame": [x[0] for x in memory_group_by_alloc_frames],
+        "Repeat": [x[1] for x in memory_group_by_alloc_frames],
+        "Total Size (GB)": [x[2] for x in memory_group_by_alloc_frames], 
+        "Pruned Stack Trace": [prune_frames(x[3]) for x in memory_group_by_alloc_frames] # prune the stack trace
+    }
+    df_group = pd.DataFrame(data_group)
+    csv_2_path = os.path.join(mem_snapshot_csv_dir, "oom_group_by_alloc_frames.csv")
+    df_group.to_csv(csv_2_path, index=False)
+    logging.info(f"2: Exported to {csv_2_path}")    
 
 
 

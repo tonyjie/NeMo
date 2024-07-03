@@ -40,7 +40,7 @@ from nemo.utils.app_state import AppState
 from nemo.utils.debug_hook import register_debug_hooks
 from nemo.utils.exceptions import NeMoBaseException
 from nemo.utils.get_rank import get_rank, is_global_rank_zero
-from nemo.utils.memory_snapshot_analyzer import peak_memory_analysis_activation, peak_memory_analysis_weight
+from nemo.utils.memory_snapshot_analyzer import peak_memory_analysis_activation, peak_memory_analysis_weight, peak_memory_analysis_oom
 
 __all__ = ['ModelPT']
 
@@ -1682,9 +1682,14 @@ class ModelPT(LightningModule, Model):
             # print('Additional positional arguments:', args)
             # print('Additional keyword arguments:', kwargs)
             # snapshot right after an OOM happened
-            oom_snapshot_filename = '/results/oom_snapshot.pickle'
-            print(f'Catching and Saving a snapshot during OOM to {oom_snapshot_filename}')
-            torch.cuda.memory._dump_snapshot(f"{oom_snapshot_filename}")
+            print(f'===== OOM Profile: Catching and Saving a snapshot during OOM to {self._mem_snapshot_filename_oom} =====')
+            torch.cuda.memory._dump_snapshot(f"{self._mem_snapshot_filename_oom}")
+
+            # if snapshot exists, we call the peak-memory-analyzer and export the csv file
+            # Need to wait a bit after error shows up. It is running the function.
+            if os.path.exists(self._mem_snapshot_filename_oom) and self._mem_snapshot_oom_enabled and self._mem_snapshot_analysis:
+                logging.info(f"===== OOM Profile: Analyzing the generated memory snapshot file ======")
+                peak_memory_analysis_oom(self._mem_snapshot_filename_oom, self._mem_snapshot_csv_dir)
 
 
     # def save_snapshot(self):
@@ -1757,6 +1762,7 @@ class ModelPT(LightningModule, Model):
 
                 # memory snapshot options
                 self._mem_snapshot_enabled = True
+                self._mem_snapshot_oom_enabled = self.cfg.mem_snapshot.get('oom_enabled', False)
                 self._mem_snapshot_activation_profile = self.cfg.mem_snapshot.get('activation_profile', False)
                 self._mem_snapshot_weight_profile = self.cfg.mem_snapshot.get('weight_profile', False) # if True, it means we want to only profile the weight buffers. We record the snapshot from the initialization, and end it before the first batch begins. 
                 # For LoRA-LLaMA2-70b, 2 global batch (16 micro-batches) takes 486950 entries. 
@@ -1769,11 +1775,12 @@ class ModelPT(LightningModule, Model):
 
                 self._mem_snapshot_filename_weight = f"{self._mem_snapshot_filename}-weight.pickle"
                 self._mem_snapshot_filename_activation = f"{self._mem_snapshot_filename}-activation.pickle"
+                self._mem_snapshot_filename_oom = f"{self._mem_snapshot_filename}-oom.pickle"
 
-                # if type(self._mem_snapshot_max_entries) == int:
-                #     logging.info(f'Memory snapshot setup with max_entries: {self._mem_snapshot_max_entries}')
-                # else:
-                #     raise ValueError(f'Memory snapshot max_entries must be of type int. Found: {type(self._mem_snapshot_max_entries)}')             
+
+                # oom_enabled cannot be True at the same time with activation_profile or weight_profile, otherwise raise a ValueError
+                if self._mem_snapshot_oom_enabled and (self._mem_snapshot_activation_profile or self._mem_snapshot_weight_profile):
+                    raise ValueError("oom_enabled cannot be True at the same time with activation_profile or weight_profile")
 
                 if type(self._mem_snapshot_start_step) == int:
                     logging.info(f'Memory snapshot setup with step idx: {self._mem_snapshot_start_step}')
@@ -1796,24 +1803,29 @@ class ModelPT(LightningModule, Model):
                     raise ValueError(f'Memory snapshot num_mb must be of type int. Found: {type(self._mem_snapshot_num_mb)}')
 
                 if self._mem_snapshot_weight_profile:
-                    # self._mem_snapshot_activation_profile = False # try if we can take 2 snapshots in one run
                     logging.info(f"===== Weight Profile: Starting snapshot record_memory_history during initialization =====")
                     torch.cuda.memory._record_memory_history()
 
-                # if get_rank() == 0:
+                # if get_rank() == 0: # Use this will lead to an error: ValueError: Default process group has not been initialized, please make sure to call init_process_group. Since nccl process group is not initialized yet. We will use `get_rank() = 0` inside `oom_observer()` to make sure we only get snapshot from one device trace. 
                 # OOM observer
-                torch._C._cuda_attach_out_of_memory_observer(self.oom_observer)
-
-                # Set the global exception handler to the class method
-                # sys.excepthook = self.global_exception_handler
-                # start record memory history (for OOM case)
+                if self._mem_snapshot_oom_enabled:
+                    logging.info(f"===== OOM Profile: Starting snapshot record_memory_history during initialization =====")
+                    torch.cuda.memory._record_memory_history()
+                    torch._C._cuda_attach_out_of_memory_observer(self.oom_observer)
 
 
                 # print out
                 logging.info(f"Memory snapshot enabled: {self._mem_snapshot_enabled}")
-                logging.info(f"Memory snapshot weight profile: {self._mem_snapshot_weight_profile}; activation profile: {self._mem_snapshot_activation_profile}")
+                logging.info(f"Memory snapshot oom_enabled: {self._mem_snapshot_oom_enabled}")
+                logging.info(f"Memory snapshot weight profile: {self._mem_snapshot_weight_profile}; activation profile: {self._mem_snapshot_activation_profile}; oom profile: {self._mem_snapshot_oom_enabled}")
                 logging.info(f"Memory snapshot start_step: {self._mem_snapshot_start_step}")
-                logging.info(f"Memory snapshot filename: {self._mem_snapshot_filename}; weight filename: {self._mem_snapshot_filename_weight}; activation filename: {self._mem_snapshot_filename_activation}")
+                logging.info(f"Memory snapshot filename: {self._mem_snapshot_filename}")
+                if self._mem_snapshot_oom_enabled:
+                    logging.info(f"Memory snapshot OOM filename: {self._mem_snapshot_filename_oom}")
+                if self._mem_snapshot_weight_profile: 
+                    logging.info(f"Memory snapshot weight filename: {self._mem_snapshot_filename_weight}")
+                if self._mem_snapshot_activation_profile:
+                    logging.info(f"activation filename: {self._mem_snapshot_filename_activation}")
                 logging.info(f"Memory snapshot analysis: {self._mem_snapshot_analysis}")
                 logging.info(f"Memory snapshot csv_dir: {self._mem_snapshot_csv_dir}")
                 logging.info(f"Memory snapshot num_mb: {self._mem_snapshot_num_mb}")
