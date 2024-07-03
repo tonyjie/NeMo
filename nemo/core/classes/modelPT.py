@@ -40,7 +40,7 @@ from nemo.utils.app_state import AppState
 from nemo.utils.debug_hook import register_debug_hooks
 from nemo.utils.exceptions import NeMoBaseException
 from nemo.utils.get_rank import get_rank, is_global_rank_zero
-from nemo.utils.memory_snapshot_analyzer import peak_memory_analysis
+from nemo.utils.memory_snapshot_analyzer import peak_memory_analysis_activation, peak_memory_analysis_weight
 
 __all__ = ['ModelPT']
 
@@ -134,6 +134,7 @@ class ModelPT(LightningModule, Model):
         self.set_trainer(trainer)
 
         self._setup_mem_snapshot_profiling()
+        self._batch_idx = 0 # used to get the correct batch_idx
 
 
         self._save_restore_connector = SaveRestoreConnector()
@@ -1747,40 +1748,42 @@ class ModelPT(LightningModule, Model):
             ## Memory snapshot profiling options
             memory_snapshot: 
                 enabled: True
-                step_idx: 5
-                filepath: "/results/mem-snapshot.pickle"
+                start_step: 5
+                filename: "/results/mem-snapshot"
         """
         if self.cfg.get('mem_snapshot', None) is not None:
             if self.cfg.mem_snapshot.get('enabled', False):
                 self.snapshot = None
 
-                # logging.info(f"===== Starting snapshot record_memory_history during initialization =====")
-                # torch.cuda.memory._record_memory_history()
-
                 # memory snapshot options
                 self._mem_snapshot_enabled = True
+                self._mem_snapshot_activation_profile = self.cfg.mem_snapshot.get('activation_profile', False)
+                self._mem_snapshot_weight_profile = self.cfg.mem_snapshot.get('weight_profile', False) # if True, it means we want to only profile the weight buffers. We record the snapshot from the initialization, and end it before the first batch begins. 
                 # For LoRA-LLaMA2-70b, 2 global batch (16 micro-batches) takes 486950 entries. 
                 self._mem_snapshot_max_entries = 30000000 # we set a very large max_entries. I think normally one iteration won't exceed this restriction. This is only to avoid the extremely large file. 
-                self._mem_snapshot_step_idx = self.cfg.mem_snapshot.get('step_idx', 2) # default: start with 2, because idx = 0 or 1 is problematic (there are 2 batch[0]. Likely to be a BUG?)
-                self._mem_snapshot_filepath = self.cfg.mem_snapshot.get('filepath', '')
+                self._mem_snapshot_start_step = self.cfg.mem_snapshot.get('start_step', 2) # default: start with 2, because idx = 0 or 1 is problematic (there are 2 batch[0]. Likely to be a BUG?)
+                self._mem_snapshot_filename = self.cfg.mem_snapshot.get('filename', '')
                 self._mem_snapshot_csv_dir = self.cfg.mem_snapshot.get('csv_dir', '/results/')
                 self._mem_snapshot_num_mb = self.cfg.mem_snapshot.get('num_mb', 1) # number of micro-batches per global batch. 
                 self._mem_snapshot_analysis = self.cfg.mem_snapshot.get('analysis', False)
+
+                self._mem_snapshot_filename_weight = f"{self._mem_snapshot_filename}-weight.pickle"
+                self._mem_snapshot_filename_activation = f"{self._mem_snapshot_filename}-activation.pickle"
 
                 # if type(self._mem_snapshot_max_entries) == int:
                 #     logging.info(f'Memory snapshot setup with max_entries: {self._mem_snapshot_max_entries}')
                 # else:
                 #     raise ValueError(f'Memory snapshot max_entries must be of type int. Found: {type(self._mem_snapshot_max_entries)}')             
 
-                if type(self._mem_snapshot_step_idx) == int:
-                    logging.info(f'Memory snapshot setup with step idx: {self._mem_snapshot_step_idx}')
+                if type(self._mem_snapshot_start_step) == int:
+                    logging.info(f'Memory snapshot setup with step idx: {self._mem_snapshot_start_step}')
                 else:
-                    raise ValueError(f'Memory snapshot step idx must be of type int. Found: {type(self._mem_snapshot_step_idx)}')
+                    raise ValueError(f'Memory snapshot step idx must be of type int. Found: {type(self._mem_snapshot_start_step)}')
 
-                if type(self._mem_snapshot_filepath) == str:
-                    logging.info(f'Memory snapshot file path: {self._mem_snapshot_filepath}')
+                if type(self._mem_snapshot_filename) == str:
+                    logging.info(f'Memory snapshot file path: {self._mem_snapshot_filename}')
                 else:
-                    raise ValueError(f'Memory snapshot filepath must be of type str. Found: {type(self._mem_snapshot_filepath)}')                
+                    raise ValueError(f'Memory snapshot filename must be of type str. Found: {type(self._mem_snapshot_filename)}')                
 
                 if type(self._mem_snapshot_csv_dir) == str:
                     logging.info(f'Memory snapshot exported csv dir: {self._mem_snapshot_csv_dir}')
@@ -1792,9 +1795,15 @@ class ModelPT(LightningModule, Model):
                 else:
                     raise ValueError(f'Memory snapshot num_mb must be of type int. Found: {type(self._mem_snapshot_num_mb)}')
 
+                if self._mem_snapshot_weight_profile:
+                    # self._mem_snapshot_activation_profile = False # try if we can take 2 snapshots in one run
+                    logging.info(f"===== Weight Profile: Starting snapshot record_memory_history during initialization =====")
+                    torch.cuda.memory._record_memory_history()
+
                 # if get_rank() == 0:
                 # OOM observer
                 torch._C._cuda_attach_out_of_memory_observer(self.oom_observer)
+
                 # Set the global exception handler to the class method
                 # sys.excepthook = self.global_exception_handler
                 # start record memory history (for OOM case)
@@ -1802,10 +1811,11 @@ class ModelPT(LightningModule, Model):
 
                 # print out
                 logging.info(f"Memory snapshot enabled: {self._mem_snapshot_enabled}")
-                logging.info(f"Memory snapshot step_idx: {self._mem_snapshot_step_idx}")
-                logging.info(f"Memory snapshot filepath: {self._mem_snapshot_filepath}")
+                logging.info(f"Memory snapshot weight profile: {self._mem_snapshot_weight_profile}; activation profile: {self._mem_snapshot_activation_profile}")
+                logging.info(f"Memory snapshot start_step: {self._mem_snapshot_start_step}")
+                logging.info(f"Memory snapshot filename: {self._mem_snapshot_filename}; weight filename: {self._mem_snapshot_filename_weight}; activation filename: {self._mem_snapshot_filename_activation}")
                 logging.info(f"Memory snapshot analysis: {self._mem_snapshot_analysis}")
-                logging.info(f"Memory snapshot filepath: {self._mem_snapshot_csv_dir}")
+                logging.info(f"Memory snapshot csv_dir: {self._mem_snapshot_csv_dir}")
                 logging.info(f"Memory snapshot num_mb: {self._mem_snapshot_num_mb}")
 
 
@@ -1834,12 +1844,33 @@ class ModelPT(LightningModule, Model):
             https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-batch-start
             We use it here to enable nsys profiling and dynamic freezing.
         """
+        # logging.info(f"Started. self._batch_idx = {self._batch_idx}")
         # memory snapshot
         if self.device.type == 'cuda':
             if hasattr(self, '_mem_snapshot_enabled'):
-                if self._mem_snapshot_enabled and (batch_idx == self._mem_snapshot_step_idx - 1) and (get_rank() == 0): # because of the weird `batch_idx` mismatch "bug", we have to do this "-1" for batch start idx
+                # Weight Profile
+                if self._mem_snapshot_enabled and self._mem_snapshot_weight_profile and (self._batch_idx == 0) and (get_rank() == 0): # before the first batch start
+                    # dump snapshot and stop recording
+                    try:
+                        logging.info(f"===== Weight Profile: Saving snapshot to local file: {self._mem_snapshot_filename_weight} =====")
+                        torch.cuda.memory._dump_snapshot(f"{self._mem_snapshot_filename_weight}")
+                    except Exception as e:
+                        logging.error(f"Failed to capture memory snapshot {e}")
+                        return
+                    logging.info(f"===== Weight Profile: Stopping snapshot record_memory_history at batch {batch_idx}, rank {get_rank()} =====")
+                    torch.cuda.memory._record_memory_history(enabled=None)
+                    
+                    # if snapshot exists, we call the peak-memory-analyzer and export the csv file
+                    if os.path.exists(self._mem_snapshot_filename_weight) and self._mem_snapshot_analysis:
+                        logging.info(f"===== Weight Profile: Analyzing the generated memory snapshot file ======")
+                        peak_memory_analysis_weight(self._mem_snapshot_filename_weight, self._mem_snapshot_csv_dir)
+                    else:
+                        raise Exception(f"Snapshot file not found: {self._mem_snapshot_filename_weight}")
+                                     
+                # Activation profile
+                if self._mem_snapshot_enabled and self._mem_snapshot_activation_profile and (batch_idx == self._mem_snapshot_start_step - 1) and (get_rank() == 0): # because of the weird `batch_idx` mismatch "bug", we have to do this "-1" for batch start idx
                     # start recording memory history
-                    logging.info(f"===== Starting snapshot record_memory_history at batch {self._mem_snapshot_step_idx} (but batch_idx={batch_idx}), rank: {get_rank()} =====")
+                    logging.info(f"===== Activation Profile: Starting snapshot record_memory_history at batch {self._mem_snapshot_start_step} (but batch_idx={batch_idx}), rank: {get_rank()} =====")
                     self._mem_snapshot_memory_allocated = torch.cuda.memory_allocated() # should be weight_memory. # in Bytes. 
                     torch.cuda.memory._record_memory_history(max_entries=self._mem_snapshot_max_entries)
                     logging.info(f"Before recording memory snapshot, allocated memory: {self._mem_snapshot_memory_allocated / (1024*1024*1024)} GB")
@@ -1882,34 +1913,29 @@ class ModelPT(LightningModule, Model):
             https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-batch-end
             We use it here to enable nsys profiling.
         """
-        # from datetime import datetime
-        # TIME_FORMAT_STR: str = "%b_%d_%H_%M_%S"
-        
+        # logging.info(f"Ended. self._batch_idx = {self._batch_idx}")
+
         # export memory snapshot
         if self.device.type == 'cuda':
             if hasattr(self, '_mem_snapshot_enabled'):
-                if self._mem_snapshot_enabled and (batch_idx == self._mem_snapshot_step_idx + 1) and (get_rank() == 0):
-                    # timestamp = datetime.now().strftime(TIME_FORMAT_STR)
-                    # snapshot_file = f"/results/{timestamp}.pickle"
-                    # snapshot_file = self._mem_snapshot_filepath
-
+                if self._mem_snapshot_enabled and self._mem_snapshot_activation_profile and (batch_idx == self._mem_snapshot_start_step + 1) and (get_rank() == 0):
                     try:
-                        logging.info(f"===== Saving snapshot to local file: {self._mem_snapshot_filepath} =====")
-                        torch.cuda.memory._dump_snapshot(f"{self._mem_snapshot_filepath}")
+                        logging.info(f"===== Activation Profile: Saving snapshot to local file: {self._mem_snapshot_filename_activation} =====")
+                        torch.cuda.memory._dump_snapshot(f"{self._mem_snapshot_filename_activation}")
                     except Exception as e:
                         logging.error(f"Failed to capture memory snapshot {e}")
                         return
 
                     # stop record memory history
-                    logging.info(f"===== Stopping snapshot record_memory_history at batch {batch_idx}, rank {get_rank()} =====")
+                    logging.info(f"===== Activation Profile: Stopping snapshot record_memory_history at batch {batch_idx}, rank {get_rank()} =====")
                     torch.cuda.memory._record_memory_history(enabled=None)
 
                     # if snapshot exists, we call the peak-memory-analyzer and export the csv file
-                    if os.path.exists(self._mem_snapshot_filepath) and self._mem_snapshot_analysis:
-                        logging.info(f"===== Analyzing the generated memory snapshot file ======")
-                        peak_memory_analysis(self._mem_snapshot_filepath, self._mem_snapshot_csv_dir, self._mem_snapshot_memory_allocated, self._mem_snapshot_num_mb)
+                    if os.path.exists(self._mem_snapshot_filename_activation) and self._mem_snapshot_analysis:
+                        logging.info(f"===== Activation Profile: Analyzing the generated memory snapshot file ======")
+                        peak_memory_analysis_activation(self._mem_snapshot_filename_activation, self._mem_snapshot_csv_dir, self._mem_snapshot_memory_allocated, self._mem_snapshot_num_mb)
                     else:
-                        raise Exception(f"Snapshot file not found: {self._mem_snapshot_filepath}")
+                        raise Exception(f"Snapshot file not found: {self._mem_snapshot_filename_activation}")
 
         if self.device.type == 'cuda':
             if hasattr(self, '_nsys_profile_enabled'):
@@ -1918,6 +1944,9 @@ class ModelPT(LightningModule, Model):
                         logging.info("====== End nsys profiling ======")
                         torch.cuda.cudart().cudaProfilerStop()
                         self._profile_complete = True
+        
+        # increase the batch_idx
+        self._batch_idx += 1
 
     def _cleanup_on_execution_end(self):
         """
