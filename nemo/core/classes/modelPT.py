@@ -1687,9 +1687,12 @@ class ModelPT(LightningModule, Model):
 
             # if snapshot exists, we call the peak-memory-analyzer and export the csv file
             # Need to wait a bit after error shows up. It is running the function.
-            if os.path.exists(self._mem_snapshot_filename_oom) and self._mem_snapshot_oom_enabled and self._mem_snapshot_analysis:
-                logging.info(f"===== OOM Profile: Analyzing the generated memory snapshot file ======")
-                peak_memory_analysis_oom(self._mem_snapshot_filename_oom, self._mem_snapshot_csv_dir)
+            if self._mem_snapshot_oom_enabled and self._mem_snapshot_analysis:
+                if os.path.exists(self._mem_snapshot_filename_oom):
+                    logging.info(f"===== OOM Profile: Analyzing the generated memory snapshot file ======")
+                    peak_memory_analysis_oom(self._mem_snapshot_filename_oom, self._mem_snapshot_csv_dir)
+                else:
+                    raise Exception(f"Snapshot file not found: {self._mem_snapshot_filename_oom}")
 
 
     # def save_snapshot(self):
@@ -1885,11 +1888,12 @@ class ModelPT(LightningModule, Model):
                     torch.cuda.memory._record_memory_history(enabled=None)
                     
                     # if snapshot exists, we call the peak-memory-analyzer and export the csv file
-                    if os.path.exists(self._mem_snapshot_filename_weight) and self._mem_snapshot_analysis:
-                        logging.info(f"===== Weight Profile: Analyzing the generated memory snapshot file ======")
-                        peak_memory_analysis_weight(self._mem_snapshot_filename_weight, self._mem_snapshot_csv_dir)
-                    else:
-                        raise Exception(f"Snapshot file not found: {self._mem_snapshot_filename_weight}")
+                    if self._mem_snapshot_analysis: 
+                        if os.path.exists(self._mem_snapshot_filename_weight):
+                            logging.info(f"===== Weight Profile: Analyzing the generated memory snapshot file ======")
+                            peak_memory_analysis_weight(self._mem_snapshot_filename_weight, self._mem_snapshot_csv_dir)
+                        else:
+                            raise Exception(f"Snapshot file not found: {self._mem_snapshot_filename_weight}")
                                      
                 # Activation profile
                 if self._mem_snapshot_enabled and self._mem_snapshot_activation_profile and (batch_idx == self._mem_snapshot_start_step - 1) and (get_rank() == 0): # because of the weird `batch_idx` mismatch "bug", we have to do this "-1" for batch start idx
@@ -1955,11 +1959,12 @@ class ModelPT(LightningModule, Model):
                     torch.cuda.memory._record_memory_history(enabled=None)
 
                     # if snapshot exists, we call the peak-memory-analyzer and export the csv file
-                    if os.path.exists(self._mem_snapshot_filename_activation) and self._mem_snapshot_analysis:
-                        logging.info(f"===== Activation Profile: Analyzing the generated memory snapshot file ======")
-                        peak_memory_analysis_activation(self._mem_snapshot_filename_activation, self._mem_snapshot_csv_dir, self._mem_snapshot_memory_allocated, self._mem_snapshot_num_mb)
-                    else:
-                        raise Exception(f"Snapshot file not found: {self._mem_snapshot_filename_activation}")
+                    if self._mem_snapshot_analysis:
+                        if os.path.exists(self._mem_snapshot_filename_activation):
+                            logging.info(f"===== Activation Profile: Analyzing the generated memory snapshot file ======")
+                            peak_memory_analysis_activation(self._mem_snapshot_filename_activation, self._mem_snapshot_csv_dir, self._mem_snapshot_memory_allocated, self._mem_snapshot_num_mb)
+                        else:
+                            raise Exception(f"Snapshot file not found: {self._mem_snapshot_filename_activation}")
 
         if self.device.type == 'cuda':
             if hasattr(self, '_nsys_profile_enabled'):
