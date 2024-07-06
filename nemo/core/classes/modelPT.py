@@ -1813,6 +1813,18 @@ class ModelPT(LightningModule, Model):
                     torch.cuda.memory._record_memory_history()
                     torch._C._cuda_attach_out_of_memory_observer(self.oom_observer)
 
+                    # try to capture NCCL error
+                    # Result: seems that we can't capture at this Python layer. 
+                    # import sys
+                    # def custom_exception_hook(exctype, value, traceback):
+                    #     if exctype == RuntimeError and "ncclUnhandledCudaError" in str(value):
+                    #         logging.info(f"===== NCCL Error Captured: {value} =====")
+                    #         self.oom_observer()
+                    #     else:
+                    #         sys.__excepthook__(exctype, value, traceback)  # Handle normally otherwise
+
+                    # sys.excepthook = custom_exception_hook
+
 
                 # print out
                 logging.info(f"Memory snapshot enabled: {self._mem_snapshot_enabled}")
